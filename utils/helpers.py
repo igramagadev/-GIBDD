@@ -1,10 +1,75 @@
 import re
+import time
 import datetime
+import logging
+from urllib.parse import urlparse
+
 import disnake
 
 from config.settings import settings, MIN_MANAGE_RANK, SERGEANT_RANK
 
-MODAL_CACHE = {}
+logger = logging.getLogger("bot.helpers")
+
+
+_MODAL_CACHE_TTL = 1800
+_MODAL_CACHE_MAX_SIZE = 1000
+
+MODAL_CACHE: dict[int, dict] = {}
+
+
+def _cleanup_modal_cache() -> None:
+    """Удаляет записи из кэша, которые старше TTL."""
+    now = time.monotonic()
+    expired = [
+        uid for uid, data in MODAL_CACHE.items()
+        if now - data.get("_ts", 0) > _MODAL_CACHE_TTL
+    ]
+    for uid in expired:
+        del MODAL_CACHE[uid]
+
+    if len(MODAL_CACHE) > _MODAL_CACHE_MAX_SIZE:
+        sorted_entries = sorted(
+            MODAL_CACHE.items(), key=lambda x: x[1].get("_ts", 0)
+        )
+        to_remove = len(MODAL_CACHE) - _MODAL_CACHE_MAX_SIZE
+        for uid, _ in sorted_entries[:to_remove]:
+            del MODAL_CACHE[uid]
+
+
+_BLOCKED_SCHEMES = frozenset({"javascript", "data", "file", "vbscript", "ftp"})
+_MAX_URL_LENGTH = 2048
+
+
+def validate_docs_url(url: str) -> bool:
+    """Проверяет, что URL является безопасной HTTP(S) ссылкой.
+
+    Возвращает True если URL валиден, False если подозрителен.
+    """
+    if not url or not url.strip():
+        return False
+
+    url = url.strip()
+
+    if len(url) > _MAX_URL_LENGTH:
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False
+
+    if not parsed.netloc or "." not in parsed.netloc:
+        return False
+
+    full_lower = url.lower()
+    for scheme in _BLOCKED_SCHEMES:
+        if f"{scheme}:" in full_lower:
+            return False
+
+    return True
 
 
 def can_manage_role(bot_member: disnake.Member | None, role: disnake.Role | None) -> bool:
@@ -14,7 +79,9 @@ def can_manage_role(bot_member: disnake.Member | None, role: disnake.Role | None
 
 
 def has_staff_role(member: disnake.Member, guild: disnake.Guild) -> bool:
-    staff_role = guild.get_role(settings.discord_staff_role_id)
+    if not settings.staff_role_id:
+        return False
+    staff_role = guild.get_role(settings.staff_role_id)
     if not staff_role:
         return False
     return staff_role in member.roles
@@ -165,12 +232,20 @@ def v2_msg(text: str) -> disnake.ui.Container:
 
 
 def get_cached_val(user_id: int, modal_name: str, field_name: str, default: str = "") -> str:
-    return MODAL_CACHE.get(user_id, {}).get(modal_name, {}).get(field_name, default)
+    entry = MODAL_CACHE.get(user_id)
+    if not entry:
+        return default
+    if time.monotonic() - entry.get("_ts", 0) > _MODAL_CACHE_TTL:
+        MODAL_CACHE.pop(user_id, None)
+        return default
+    return entry.get(modal_name, {}).get(field_name, default)
 
 
 def set_cached_val(user_id: int, modal_name: str, field_name: str, value: str):
+    _cleanup_modal_cache()
     if user_id not in MODAL_CACHE:
-        MODAL_CACHE[user_id] = {}
+        MODAL_CACHE[user_id] = {"_ts": time.monotonic()}
+    MODAL_CACHE[user_id]["_ts"] = time.monotonic()
     if modal_name not in MODAL_CACHE[user_id]:
         MODAL_CACHE[user_id][modal_name] = {}
     MODAL_CACHE[user_id][modal_name][field_name] = value

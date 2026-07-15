@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 
 import disnake
@@ -26,7 +27,36 @@ from utils.panel_init import send_v2_panel
 
 logger = logging.getLogger("bot.audit")
 
-AUDIT_SESSIONS = {}
+AUDIT_SESSIONS: dict[int, dict] = {}
+_AUDIT_SESSION_TTL = 600
+
+def _set_audit_session(user_id: int, data: dict) -> None:
+    """Создаёт сессию с меткой времени и очищает истёкшие."""
+    _cleanup_audit_sessions()
+    data["_ts"] = time.monotonic()
+    AUDIT_SESSIONS[user_id] = data
+
+
+def _get_audit_session(user_id: int) -> dict | None:
+    """Возвращает сессию, если она не истекла. Иначе — удаляет и возвращает None."""
+    session = AUDIT_SESSIONS.get(user_id)
+    if not session:
+        return None
+    if time.monotonic() - session.get("_ts", 0) > _AUDIT_SESSION_TTL:
+        AUDIT_SESSIONS.pop(user_id, None)
+        return None
+    return session
+
+
+def _cleanup_audit_sessions() -> None:
+    """Удаляет все истёкшие сессии."""
+    now = time.monotonic()
+    expired = [
+        uid for uid, data in AUDIT_SESSIONS.items()
+        if now - data.get("_ts", 0) > _AUDIT_SESSION_TTL
+    ]
+    for uid in expired:
+        del AUDIT_SESSIONS[uid]
 
 
 async def post_audit_container(guild, container):
@@ -114,10 +144,10 @@ class AuditAcceptUserSelectView(disnake.ui.View):
             await interaction.response.send_message(components=[v2_msg("Нельзя принимать самого себя.")], ephemeral=True)
             return
 
-        AUDIT_SESSIONS[interaction.user.id] = {
+        _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Accept"
-        }
+        })
 
         await interaction.response.send_modal(AuditAcceptModal())
 
@@ -163,7 +193,7 @@ class AuditAcceptModal(disnake.ui.Modal):
         rank_val = interaction.text_values["rank"].strip()
         reason_val = interaction.text_values.get("reason", "").strip()
 
-        session = AUDIT_SESSIONS.get(performer.id)
+        session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
             return
@@ -291,10 +321,10 @@ class AuditDismissUserSelectView(disnake.ui.View):
             await interaction.response.send_message(components=[v2_msg("Нельзя уволить самого себя.")], ephemeral=True)
             return
 
-        AUDIT_SESSIONS[interaction.user.id] = {
+        _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Dismiss"
-        }
+        })
         await interaction.response.send_modal(AuditDismissReasonModal())
 
 
@@ -317,7 +347,7 @@ class AuditDismissReasonModal(disnake.ui.Modal):
         guild = interaction.guild
         reason_val = interaction.text_values["reason"].strip()
 
-        session = AUDIT_SESSIONS.get(performer.id)
+        session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
             return
@@ -448,7 +478,7 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
         new_rank = interaction.text_values["new_rank"].strip()
         reason_val = interaction.text_values["reason"].strip()
 
-        session = AUDIT_SESSIONS.get(performer.id)
+        session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(
                 components=[v2_msg("Сессия истекла или не найдена. Начните выбор заново.")],
@@ -584,12 +614,12 @@ class AuditDemoteUserSelectView(disnake.ui.View):
             await interaction.response.send_message(components=[v2_msg("Пользователь не найден в базе данных.")], ephemeral=True)
             return
 
-        AUDIT_SESSIONS[interaction.user.id] = {
+        _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Demote",
             "old_rank": user_db["rank"],
             "static_id": user_db["static_id"]
-        }
+        })
         await interaction.response.send_modal(AuditPromoteDemoteModal("Demote"))
 
 
@@ -613,12 +643,12 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             await interaction.response.send_message(components=[v2_msg("Пользователь не найден в базе данных.")], ephemeral=True)
             return
 
-        AUDIT_SESSIONS[interaction.user.id] = {
+        _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Promote",
             "old_rank": user_db["rank"],
             "static_id": user_db["static_id"]
-        }
+        })
         await interaction.response.send_modal(AuditPromoteDemoteModal("Promote"))
 
 

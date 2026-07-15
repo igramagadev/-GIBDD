@@ -120,6 +120,7 @@ class Settings:
 
 
 
+    staff_role_id: int = field(default_factory=lambda: _int_env("STAFF_ROLE_ID", 0))
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))
     cadet_role_id: int = field(default_factory=lambda: _int_env("CADET_ROLE_ID", 0))
     fired_role_id: int = field(default_factory=lambda: _int_env("FIRED_ROLE_ID", 0))
@@ -173,6 +174,8 @@ class Settings:
             warnings.append("BASE_ROLE_ID не задан")
         if self.cadet_role_id == 0:
             warnings.append("CADET_ROLE_ID не задан")
+        if self.staff_role_id == 0:
+            warnings.append("STAFF_ROLE_ID не задан")
         return warnings
 
 settings = Settings()

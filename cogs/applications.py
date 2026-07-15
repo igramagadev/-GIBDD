@@ -26,6 +26,7 @@ from utils.helpers import (
     get_cached_val,
     set_cached_val,
     get_staff_title,
+    validate_docs_url,
 )
 from utils.interaction_guard import interaction_guard
 
@@ -79,7 +80,7 @@ def build_application_container(
 
     components.append(disnake.ui.TextDisplay(fields_text))
 
-    if docs and (docs.startswith("http://") or docs.startswith("https://")):
+    if docs and validate_docs_url(docs):
         components.append(disnake.ui.Separator())
         components.append(disnake.ui.MediaGallery(disnake.ui.MediaGalleryItem(media=docs)))
 
