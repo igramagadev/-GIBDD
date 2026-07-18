@@ -121,9 +121,13 @@ class Settings:
 
 
     staff_role_id: int = field(default_factory=lambda: _int_env("STAFF_ROLE_ID", 0))
+    ss_role_id: int = field(default_factory=lambda: _int_env("SS_ROLE_ID", 0))
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))
     cadet_role_id: int = field(default_factory=lambda: _int_env("CADET_ROLE_ID", 0))
     fired_role_id: int = field(default_factory=lambda: _int_env("FIRED_ROLE_ID", 0))
+    protected_role_ids: list[int] = field(
+        default_factory=lambda: _int_list_env("PROTECTED_ROLE_IDS", [])
+    )
 
     button_cooldown_seconds: float = field(
         default_factory=lambda: float(os.getenv("BUTTON_COOLDOWN_SECONDS", "3"))
@@ -176,6 +180,8 @@ class Settings:
             warnings.append("CADET_ROLE_ID не задан")
         if self.staff_role_id == 0:
             warnings.append("STAFF_ROLE_ID не задан")
+        if self.ss_role_id == 0:
+            warnings.append("SS_ROLE_ID не задан — is_ss() всегда False")
         return warnings
 
 settings = Settings()

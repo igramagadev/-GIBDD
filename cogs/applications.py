@@ -27,6 +27,10 @@ from utils.helpers import (
     set_cached_val,
     get_staff_title,
     validate_docs_url,
+    is_protected_role,
+    is_ss,
+    get_rank_index,
+    get_member_rank_index,
 )
 from utils.interaction_guard import interaction_guard
 
@@ -264,6 +268,13 @@ class ApplicationRoleSelectView(disnake.ui.View):
         issued_roles = []
         
         for role in select.values:
+            if is_protected_role(role):
+                errors.append(f"Роль '{role.name}' защищена и не может быть назначена")
+                logger.warning(
+                    "БЕЗОПАСНОСТЬ | Попытка назначить защищённую роль '%s' (ID: %s) пользователю %s | Исполнитель: %s (ID: %s)",
+                    role.name, role.id, target, member, member.id
+                )
+                continue
             if role not in target.roles:
                 if can_manage_role(bot_member, role):
                     try:
@@ -361,6 +372,18 @@ class ApplicationActionView(disnake.ui.View):
             if member.id == user_id:
                 await interaction.followup.send(components=[v2_msg("Нельзя одобрять свою собственную заявку.")], ephemeral=True)
                 return
+
+            if not is_ss(member):
+                approver_rank_idx = get_member_rank_index(member, guild)
+                app_rank_idx = get_rank_index(rank)
+                if app_rank_idx != -1 and approver_rank_idx != -1 and app_rank_idx >= approver_rank_idx:
+                    await interaction.followup.send(
+                        components=[v2_msg(
+                            f"Нельзя одобрять заявку на звание '{rank}' — оно не ниже вашего."
+                        )],
+                        ephemeral=True,
+                    )
+                    return
 
             user_db = get_user(user_id)
 
@@ -603,6 +626,17 @@ class ApplicationModal(disnake.ui.Modal):
         set_cached_val(self.user_id, "ApplicationModal", "desired_rank", rank_str)
         set_cached_val(self.user_id, "ApplicationModal", "method", method_str)
         set_cached_val(self.user_id, "ApplicationModal", "docs", docs_str)
+
+        if get_rank_index(rank_str) == -1:
+            available = ", ".join(settings.ranks)
+            await interaction.followup.send(
+                components=[v2_msg(
+                    f"Звание \"{rank_str}\" не найдено в списке допустимых.\n"
+                    f"Доступные звания: {available}"
+                )],
+                ephemeral=True,
+            )
+            return
 
         review_channel = guild.get_channel(settings.application_review_channel_id)
         if not review_channel:

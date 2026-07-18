@@ -118,17 +118,43 @@ def can_manage_staff(member: disnake.Member, guild: disnake.Guild) -> bool:
 
 
 def is_ss(member: disnake.Member) -> bool:
-    return any(r.id == 1500573332091703518 for r in member.roles)
+    if not settings.ss_role_id:
+        return False
+    return any(r.id == settings.ss_role_id for r in member.roles)
+
+
+def is_protected_role(role: disnake.Role) -> bool:
+
+    if settings.ss_role_id and role.id == settings.ss_role_id:
+        return True
+
+    if role.id in settings.protected_role_ids:
+        return True
+
+    dangerous_perms = (
+        role.permissions.administrator,
+        role.permissions.manage_guild,
+        role.permissions.manage_roles,
+        role.permissions.ban_members,
+    )
+    if any(dangerous_perms):
+        return True
+
+    return False
 
 
 def can_manage_applications(member: disnake.Member) -> bool:
     if is_ss(member):
         return True
     
-    cpps_roles = ["преподаватель", "цппс", "начальник цппс", "зам. начальника цппс", "заместитель начальника цппс"]
+    cpps_roles = frozenset({
+        "преподаватель", "цппс",
+        "начальник цппс", "зам. начальника цппс",
+        "заместитель начальника цппс",
+    })
     for role in member.roles:
-        name_lower = role.name.lower()
-        if any(c in name_lower for c in cpps_roles) and ("преподаватель" in name_lower or "цппс" in name_lower):
+        name_lower = role.name.strip().lower()
+        if name_lower in cpps_roles:
             return True
             
     return False
