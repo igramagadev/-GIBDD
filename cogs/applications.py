@@ -600,14 +600,6 @@ class ApplicationModal(disnake.ui.Modal):
                 required=True,
                 max_length=50,
                 value=cached_rank
-            ),
-            disnake.ui.TextInput(
-                label="Ссылка на документы",
-                custom_id="docs",
-                placeholder="Например: https://imgur.com/...",
-                required=False,
-                max_length=200,
-                value=cached_docs
             )
         ]
         super().__init__(title="Заявка на роль", components=components)
@@ -620,13 +612,11 @@ class ApplicationModal(disnake.ui.Modal):
         rank_str = interaction.text_values["desired_rank"].strip()
         nickname_str = interaction.text_values["nickname"].strip()
         static_id_str = interaction.text_values["static_id"].strip()
-        docs_str = interaction.text_values.get("docs", "").strip()
 
         set_cached_val(self.user_id, "ApplicationModal", "nickname", nickname_str)
         set_cached_val(self.user_id, "ApplicationModal", "static_id", static_id_str)
         set_cached_val(self.user_id, "ApplicationModal", "desired_rank", rank_str)
         set_cached_val(self.user_id, "ApplicationModal", "method", method_str)
-        set_cached_val(self.user_id, "ApplicationModal", "docs", docs_str)
 
         if get_rank_index(rank_str) == -1:
             available = ", ".join(settings.ranks)
