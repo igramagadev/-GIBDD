@@ -31,7 +31,8 @@ def setup_logging(level: int = logging.INFO) -> None:
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    if not any(type(h) is logging.StreamHandler for h in root.handlers):
         console = logging.StreamHandler()
         console.setFormatter(formatter)
         root.addHandler(console)
+

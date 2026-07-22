@@ -93,15 +93,17 @@ bot = GibddBot()
 async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
     if isinstance(error, commands.CommandNotFound):
         return
-    logger.error("Ошибка команды %s: %s", ctx.command, error)
+    logger.error("Ошибка выполнения команды '%s': %s", ctx.command, error, exc_info=error)
 
 
 async def main():
+    logger.info("Инициализация бота...")
     bot.setup_bot()
     if not settings.discord_token or settings.discord_token == "YOUR_BOT_TOKEN_HERE":
         logger.error("Токен не настроен. Укажите DISCORD_BOT_TOKEN в .env")
     else:
         try:
+            logger.info("Запуск бота и подключение к Discord API...")
             await bot.start(settings.discord_token)
         except KeyboardInterrupt:
             await bot.close()

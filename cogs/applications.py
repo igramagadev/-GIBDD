@@ -33,6 +33,7 @@ from utils.helpers import (
     get_member_rank_index,
 )
 from utils.interaction_guard import interaction_guard
+from utils.panel_init import send_v2_panel
 
 logger = logging.getLogger("bot.applications")
 
@@ -132,7 +133,7 @@ def build_resignation_container(
 
     date_str = datetime.now().strftime("%d.%m.%Y")
     statement_text = (
-        "Начальнику Управления ГИБДД ГУ МВД по г. Москве и Московской области Генерал-лейтенанту полиции\n"
+        "Начальнику Управления ГИБДД ГУ МВД по г. Москве и Московской области Генерал-полковнику полиции\n"
         f"{leader_mention}\n\n"
         f"от {rank} полиции {nickname}\n\n"
         "**Заявление**\n\n"
@@ -1102,4 +1103,13 @@ class ResignationRejectionReasonModal(disnake.ui.Modal):
 class ApplicationsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    async def init_panel(self):
+        await send_v2_panel(self.bot, settings.application_panel_channel_id, "application")
+        await send_v2_panel(self.bot, settings.resignation_panel_channel_id, "resignation")
+
+
+def setup(bot):
+    bot.add_cog(ApplicationsCog(bot))
+
 

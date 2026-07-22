@@ -87,19 +87,20 @@ def has_staff_role(member: disnake.Member, guild: disnake.Guild) -> bool:
     return staff_role in member.roles
 
 
-def get_member_rank_index(member: disnake.Member, guild: disnake.Guild) -> int:
+def get_member_rank_index(member: disnake.Member, guild: disnake.Guild | None = None) -> int:
     ranks = settings.ranks
+    target_guild = guild or getattr(member, "guild", None)
     for idx in range(len(ranks) - 1, -1, -1):
         rank_name = ranks[idx]
-        role_id = settings.ranks_map.get(rank_name)
-        if role_id:
-            role = guild.get_role(role_id)
-            if role and role in member.roles:
-                return idx
-        else:
-            for role in member.roles:
-                if role.name.strip().lower() == rank_name.strip().lower():
+        if target_guild:
+            role_id = settings.ranks_map.get(rank_name)
+            if role_id:
+                role = target_guild.get_role(role_id)
+                if role and role in member.roles:
                     return idx
+        for role in member.roles:
+            if role.name.strip().lower() == rank_name.strip().lower():
+                return idx
     return -1
 
 
@@ -143,10 +144,16 @@ def is_protected_role(role: disnake.Role) -> bool:
     return False
 
 
-def can_manage_applications(member: disnake.Member) -> bool:
+def can_manage_applications(member: disnake.Member, guild: disnake.Guild | None = None) -> bool:
     if is_ss(member):
         return True
-    
+
+    target_guild = guild or getattr(member, "guild", None)
+    rank_idx = get_member_rank_index(member, target_guild)
+    captain_idx = get_rank_index(MIN_MANAGE_RANK)
+    if rank_idx != -1 and captain_idx != -1 and rank_idx >= captain_idx:
+        return True
+
     cpps_roles = frozenset({
         "преподаватель", "цппс",
         "начальник цппс", "зам. начальника цппс",
@@ -156,7 +163,7 @@ def can_manage_applications(member: disnake.Member) -> bool:
         name_lower = role.name.strip().lower()
         if name_lower in cpps_roles:
             return True
-            
+
     return False
 
 
