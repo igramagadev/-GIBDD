@@ -158,7 +158,7 @@ class Settings:
 
     def validate(self) -> list[str]:
         warnings: list[str] = []
-        if not self.discord_token or self.discord_token == "YOUR_BOT_TOKEN_HERE":
+        if not self.discord_token:
             warnings.append("DISCORD_BOT_TOKEN не задан")
         if self.application_panel_channel_id == 0:
             warnings.append("APPLICATION_PANEL_CHANNEL_ID не задан")

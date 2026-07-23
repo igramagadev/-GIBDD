@@ -126,7 +126,7 @@ def build_resignation_container(
 
     leader_mention = "@Начальник"
     if guild:
-        leader_role = disnake.utils.get(guild.roles, name="Начальник УГИБДД")
+        leader_role = disnake.utils.get(guild.roles, name="Начальник Управления ГИБДД")
         leader = leader_role.members[0] if leader_role and leader_role.members else guild.owner
         if leader:
             leader_mention = leader.mention
@@ -647,7 +647,6 @@ class ApplicationModal(disnake.ui.Modal):
             method=method_str,
             rank=rank_str,
             status_text="Ожидает рассмотрения",
-            docs=docs_str,
             action_row=action_row
         )
         app_message = await review_channel.send(components=[container])
@@ -660,7 +659,6 @@ class ApplicationModal(disnake.ui.Modal):
             rank=rank_str,
             method=method_str,
             message_id=app_message.id,
-            docs=docs_str
         )
 
         container_with_id = build_application_container(
@@ -671,7 +669,6 @@ class ApplicationModal(disnake.ui.Modal):
             method=method_str,
             rank=rank_str,
             status_text="Ожидает рассмотрения",
-            docs=docs_str,
             action_row=action_row
         )
         await app_message.edit(components=[container_with_id])
