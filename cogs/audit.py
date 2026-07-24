@@ -298,16 +298,23 @@ class AuditDismissUserSelectView(disnake.ui.View):
 
 
 class AuditDismissReasonModal(disnake.ui.Modal):
-    def __init__(self):
-        components = [
-            disnake.ui.TextInput(
-                label="Причина / Рапорт",
-                custom_id="reason",
+    def __init__(self, needs_static: bool = False):
+        components = []
+        if needs_static:
+            components.append(disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                placeholder="Например: 111-111",
                 required=True,
-                max_length=500,
-                style=disnake.TextInputStyle.paragraph
-            )
-        ]
+                max_length=20
+            ))
+        components.append(disnake.ui.TextInput(
+            label="Причина / Рапорт",
+            custom_id="reason",
+            required=True,
+            max_length=500,
+            style=disnake.TextInputStyle.paragraph
+        ))
         super().__init__(title="Увольнение сотрудника", components=components)
 
     async def callback(self, interaction: disnake.ModalInteraction):
@@ -328,7 +335,14 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             return
 
         user_db = get_user(target_id)
-        static_id = user_db["static_id"] if user_db else "Не указан"
+        
+        static_id_input = interaction.text_values.get("static_id")
+        if static_id_input and user_db:
+            static_id = static_id_input.strip()
+            add_or_update_user(target_id, user_db["nickname"], static_id, user_db["rank"], user_db["status"])
+            session["static_id"] = static_id
+        else:
+            static_id = user_db["static_id"] if user_db else "Не указан"
 
         bot_member = guild.get_member(interaction.client.user.id)
         errors = []
@@ -424,25 +438,32 @@ class AuditDismissReasonModal(disnake.ui.Modal):
 
 
 class AuditPromoteDemoteModal(disnake.ui.Modal):
-    def __init__(self, action: str):
+    def __init__(self, action: str, needs_static: bool = False):
         self.action = action
         title = "Повышение" if action == "Promote" else "Понижение"
-        components = [
-            disnake.ui.TextInput(
-                label="Новое звание",
-                custom_id="new_rank",
-                placeholder="Например: Сержант",
+        components = []
+        if needs_static:
+            components.append(disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                placeholder="Например: 123456",
                 required=True,
-                max_length=50
-            ),
-            disnake.ui.TextInput(
-                label="Причина / Рапорт",
-                custom_id="reason",
-                required=True,
-                max_length=500,
-                style=disnake.TextInputStyle.paragraph
-            )
-        ]
+                max_length=20
+            ))
+        components.append(disnake.ui.TextInput(
+            label="Новое звание",
+            custom_id="new_rank",
+            placeholder="Например: Сержант",
+            required=True,
+            max_length=50
+        ))
+        components.append(disnake.ui.TextInput(
+            label="Причина / Рапорт",
+            custom_id="reason",
+            required=True,
+            max_length=500,
+            style=disnake.TextInputStyle.paragraph
+        ))
         super().__init__(title=title, components=components)
 
     async def callback(self, interaction: disnake.ModalInteraction):
@@ -461,6 +482,14 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             return
 
         target_id = session["target_id"]
+        
+        static_id_input = interaction.text_values.get("static_id")
+        if static_id_input:
+            session["static_id"] = static_id_input.strip()
+            user_db = get_user(target_id)
+            if user_db:
+                add_or_update_user(target_id, user_db["nickname"], session["static_id"], user_db["rank"], user_db["status"])
+                
         action = session["action"]
         static_id = session["static_id"]
         old_rank = session["old_rank"]
@@ -559,7 +588,8 @@ class AuditDemoteUserSelectView(disnake.ui.View):
             "old_rank": user_db["rank"],
             "static_id": user_db["static_id"]
         })
-        await interaction.response.send_modal(AuditPromoteDemoteModal("Demote"))
+        needs_static = user_db.get("static_id") in ("Не указан", None, "")
+        await interaction.response.send_modal(AuditPromoteDemoteModal("Demote", needs_static=needs_static))
 
 
 class AuditPromoteUserSelectView(disnake.ui.View):
@@ -588,7 +618,8 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             "old_rank": user_db["rank"],
             "static_id": user_db["static_id"]
         })
-        await interaction.response.send_modal(AuditPromoteDemoteModal("Promote"))
+        needs_static = user_db.get("static_id") in ("Не указан", None, "")
+        await interaction.response.send_modal(AuditPromoteDemoteModal("Promote", needs_static=needs_static))
 
 
 class AuditTransferUserSelectView(disnake.ui.View):
@@ -659,8 +690,8 @@ class AuditTransferUserSelectView(disnake.ui.View):
             if not session:
                 await inter.response.send_message(components=[v2_msg("Сессия истекла.")], ephemeral=True)
                 return
-            session["new_department"] = inter.values[0]
-            await inter.response.send_modal(AuditTransferReasonModal())
+            needs_static = session.get("static_id") in ("Не указан", None, "")
+            await inter.response.send_modal(AuditTransferReasonModal(needs_static=needs_static))
             
         select_menu.callback = _dept_callback
         
@@ -679,16 +710,23 @@ class AuditTransferUserSelectView(disnake.ui.View):
         await interaction.followup.send(components=[container], ephemeral=True)
 
 class AuditTransferReasonModal(disnake.ui.Modal):
-    def __init__(self):
-        components = [
-            disnake.ui.TextInput(
-                label="Причина перевода",
-                custom_id="reason",
+    def __init__(self, needs_static: bool = False):
+        components = []
+        if needs_static:
+            components.append(disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                placeholder="Например: 123456",
                 required=True,
-                max_length=500,
-                style=disnake.TextInputStyle.paragraph
-            )
-        ]
+                max_length=20
+            ))
+        components.append(disnake.ui.TextInput(
+            label="Причина перевода",
+            custom_id="reason",
+            required=True,
+            max_length=500,
+            style=disnake.TextInputStyle.paragraph
+        ))
         super().__init__(title="Перевод сотрудника", components=components)
 
     async def callback(self, interaction: disnake.ModalInteraction):
@@ -703,6 +741,14 @@ class AuditTransferReasonModal(disnake.ui.Modal):
             return
 
         target_id = session["target_id"]
+        
+        static_id_input = interaction.text_values.get("static_id")
+        if static_id_input:
+            session["static_id"] = static_id_input.strip()
+            user_db = get_user(target_id)
+            if user_db:
+                add_or_update_user(target_id, user_db["nickname"], session["static_id"], user_db["rank"], user_db["status"])
+                
         static_id = session["static_id"]
         old_dept = session["old_department"]
         new_dept = session["new_department"]

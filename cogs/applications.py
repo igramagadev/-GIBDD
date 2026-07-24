@@ -1089,15 +1089,7 @@ class ApplicationsCog(commands.Cog):
                     rank_idx = get_member_rank_index(member, guild)
                     rank_name = settings.ranks[rank_idx] if rank_idx != -1 else "Неизвестно"
                     
-                    # Try to extract static ID from nickname (e.g. `123456`) or use "Не указан"
                     static_id = "Не указан"
-                    import re
-                    match = re.search(r'\[(\d+)\]', member.display_name)
-                    if not match:
-                        match = re.search(r'(\d{4,})', member.display_name)
-                    if match:
-                        static_id = match.group(1)
-                        
                     add_or_update_user(member.id, member.display_name, static_id, rank_name, "active")
                     synced_count += 1
                     await asyncio.sleep(0.1) # Yield to event loop
