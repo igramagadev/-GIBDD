@@ -18,7 +18,6 @@ MODAL_CACHE: dict[int, dict] = {}
 
 
 def _cleanup_modal_cache() -> None:
-    """Удаляет записи из кэша, которые старше TTL."""
     now = time.monotonic()
     expired = [
         uid for uid, data in MODAL_CACHE.items()
@@ -41,10 +40,6 @@ _MAX_URL_LENGTH = 2048
 
 
 def validate_docs_url(url: str) -> bool:
-    """Проверяет, что URL является безопасной HTTP(S) ссылкой.
-
-    Возвращает True если URL валиден, False если подозрителен.
-    """
     if not url or not url.strip():
         return False
 
@@ -79,9 +74,10 @@ def can_manage_role(bot_member: disnake.Member | None, role: disnake.Role | None
 
 
 def has_staff_role(member: disnake.Member, guild: disnake.Guild) -> bool:
-    if not settings.staff_role_id:
+    role_id = settings.staff_role_id or settings.ss_role_id
+    if not role_id:
         return False
-    staff_role = guild.get_role(settings.staff_role_id)
+    staff_role = guild.get_role(role_id)
     if not staff_role:
         return False
     return staff_role in member.roles
@@ -286,3 +282,218 @@ def set_cached_val(user_id: int, modal_name: str, field_name: str, value: str):
 def clean_role_name(name: str) -> str:
     import re
     return re.sub(r'^\[.*?\]\s*', '', name)
+
+
+def shorten_dept(dept: str) -> str:
+    if not dept or dept == "Нет":
+        return ""
+    d = dept.lower()
+    if "1-й батальон" in d: return "1БП"
+    if "2-й батальон" in d: return "2БП"
+    if "3-й батальон" in d: return "3БП"
+    if "спец" in d: return "1СБ"
+    if "мто" in d: return "БМТО"
+    if "осб" in d: return "ОСБ"
+    if "академия" in d: return "Академия"
+    if "цппс" in d: return "ЦППС"
+    return dept
+
+
+def get_nickname_and_roles_for_rank(base_name: str, rank: str, current_dept: str) -> tuple[str, str | None, str | None]:
+
+    rank_lower = rank.lower().strip()
+    
+    if rank_lower == "рядовой":
+        return (f"Курсант 1К | {base_name}", None, None)
+    elif rank_lower in ("младший сержант", "мл.сержант", "мл. сержант", "мл.сержант полиции"):
+        return (f"Курсант 2К | {base_name}", None, None)
+    
+    if rank_lower == "сержант":
+        if not current_dept or current_dept == "Нет":
+            import random
+            current_dept = random.choice(["1-й батальон 1 полка", "2-й батальон 1 полка", "3-й батальон 1 полка"])
+            
+    dept_short = shorten_dept(current_dept)
+    pos_role = None
+    nick = f"{base_name}"
+
+    if current_dept in ("МТО", "БМТО"):
+        nick = f"Инспектор БМТО | {base_name}"
+        pos_role = "Инспектор группы обеспечения"
+    elif current_dept == "ОСБ":
+        nick = f"Инсп.опер.реагирования | {base_name}"
+        pos_role = "Инспектор оперативного реагирования"
+    elif current_dept == "ЦППС":
+        if rank_lower in ("сержант", "старший сержант", "ст.сержант", "ст. сержант"):
+            nick = f"Стажёр ЦППС | {base_name}"
+            pos_role = "Стажёр ЦППС"
+        elif rank_lower in ("старшина", "прапорщик", "старший прапорщик", "ст. прапорщик"):
+            nick = f"Преподаватель ЦППС | {base_name}"
+            pos_role = "Преподаватель ЦППС"
+        else:
+            nick = f"Ст.Преподаватель ЦППС | {base_name}"
+            pos_role = "Ст.Преподаватель ЦППС"
+    elif current_dept in ("1-й спец бат", "1СБ"):
+        if rank_lower in ("сержант", "старший сержант", "ст.сержант", "ст. сержант"):
+            nick = f"Стажёр 1СБ | {base_name}"
+            pos_role = "Стажёр 1СБ"
+        elif rank_lower in ("старший лейтенант", "ст. лейтенант", "капитан"):
+            nick = f"Старший Инспектор 1СБ | {base_name}"
+            pos_role = "Инспектор 1СБ"
+        else:
+            nick = f"Инспектор 1СБ | {base_name}"
+            pos_role = "Инспектор 1СБ"
+    elif current_dept in ("1-й батальон 1 полка", "2-й батальон 1 полка", "3-й батальон 1 полка"):
+        if rank_lower in ("сержант", "старший сержант", "ст.сержант", "ст. сержант"):
+            nick = f"Стажёр {dept_short} | {base_name}"
+            pos_role = "Стажёр БП"
+        else:
+            nick = f"Инспектор {dept_short} | {base_name}"
+            pos_role = "Инспектор БП"
+    else:
+        if rank_lower in ("сержант", "старший сержант", "ст.сержант", "ст. сержант"):
+            nick = f"Стажёр {dept_short} | {base_name}"
+        else:
+            nick = f"Инспектор {dept_short} | {base_name}"
+            
+    return (nick, pos_role, current_dept)
+        
+async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Guild, rank: str, bot_member: disnake.Member, override_dept: str = None) -> tuple[list[str], list[str], list[str]]:
+    issued = []
+    removed = []
+    errors = []
+
+    def _add_safe(role):
+        if role and role not in target.roles:
+            if can_manage_role(bot_member, role):
+                return True
+            errors.append(f"Роль '{role.name}' выше бота")
+        return False
+        
+    def _rem_safe(role):
+        if role and role in target.roles:
+            if can_manage_role(bot_member, role):
+                return True
+            errors.append(f"Роль '{role.name}' выше бота")
+        return False
+
+    base = guild.get_role(settings.base_role_id)
+    if _add_safe(base):
+        try:
+            await target.add_roles(base)
+            issued.append(clean_role_name(base.name))
+        except Exception as e: errors.append(str(e))
+
+    div_ids = [settings.divider_position_id, settings.divider_department_id, settings.divider_rank_id]
+    if settings.ss_role_id and is_ss(target):
+        div_ids.append(settings.divider_access_id)
+    for d_id in div_ids:
+        if d_id:
+            d_role = guild.get_role(d_id)
+            if _add_safe(d_role):
+                try:
+                    await target.add_roles(d_role)
+                    issued.append(clean_role_name(d_role.name))
+                except Exception as e: errors.append(str(e))
+
+    rank_lower = rank.lower().strip()
+    rank_role = find_rank_role(guild, rank)
+    
+    for r_name, r_id in settings.ranks_map.items():
+        if r_name.lower().strip() != rank_lower:
+            old_r = guild.get_role(r_id)
+            if _rem_safe(old_r):
+                try:
+                    await target.remove_roles(old_r)
+                    removed.append(clean_role_name(old_r.name))
+                except Exception as e: pass
+
+    if _add_safe(rank_role):
+        try:
+            await target.add_roles(rank_role)
+            issued.append(clean_role_name(rank_role.name))
+        except Exception as e: errors.append(str(e))
+        
+    cadet = guild.get_role(settings.cadet_role_id)
+    if rank_lower in ("рядовой", "мл. сержант", "младший сержант", "мл.сержант"):
+        if _add_safe(cadet):
+            try:
+                await target.add_roles(cadet)
+                issued.append(clean_role_name(cadet.name))
+            except Exception as e: errors.append(str(e))
+    else:
+        if _rem_safe(cadet):
+            try:
+                await target.remove_roles(cadet)
+                removed.append(clean_role_name(cadet.name))
+            except Exception as e: pass
+
+    current_dept = "Нет"
+    if override_dept:
+        current_dept = override_dept
+    else:
+        for dept_name, role_id in settings.department_role_ids.items():
+            r = guild.get_role(role_id)
+            if r and r in target.roles:
+                current_dept = dept_name
+                break
+            
+    base_name = target.display_name
+    if " | " in base_name:
+        base_name = base_name.split(" | ", 1)[1]
+    elif "] " in base_name:
+        base_name = base_name.split("] ", 1)[1]
+        
+    new_nick, new_pos_role_name, new_dept = get_nickname_and_roles_for_rank(base_name, rank, current_dept)
+    
+    if new_dept and new_dept != "Нет":
+        for old_dept_name, old_role_id in settings.department_role_ids.items():
+            if old_dept_name != new_dept:
+                old_d = guild.get_role(old_role_id)
+                if _rem_safe(old_d):
+                    try:
+                        await target.remove_roles(old_d)
+                        removed.append(clean_role_name(old_d.name))
+                    except Exception: pass
+        new_d = guild.get_role(settings.department_role_ids.get(new_dept))
+        if _add_safe(new_d):
+            try:
+                await target.add_roles(new_d)
+                issued.append(clean_role_name(new_d.name))
+            except Exception: pass
+            
+    if new_pos_role_name and new_pos_role_name in settings.position_role_ids:
+        new_pos_role_id = settings.position_role_ids[new_pos_role_name]
+    else:
+        new_pos_role_id = None
+        
+    for pos_name, pos_id in settings.position_role_ids.items():
+        pos_r = guild.get_role(pos_id)
+        if not pos_r: continue
+        
+        if pos_id == new_pos_role_id:
+            if _add_safe(pos_r):
+                try:
+                    await target.add_roles(pos_r)
+                    issued.append(clean_role_name(pos_r.name))
+                except Exception: pass
+        else:
+            if _rem_safe(pos_r):
+                try:
+                    await target.remove_roles(pos_r)
+                    removed.append(clean_role_name(pos_r.name))
+                except Exception: pass
+
+    fired = guild.get_role(settings.fired_role_id)
+    if _rem_safe(fired):
+        try:
+            await target.remove_roles(fired)
+            removed.append(clean_role_name(fired.name))
+        except Exception: pass
+        
+    try:
+        await target.edit(nick=new_nick[:32])
+    except Exception as e:
+        errors.append(f"Ник: {e}")
+
+    return issued, removed, errors

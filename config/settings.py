@@ -120,11 +120,16 @@ class Settings:
 
 
 
-    staff_role_id: int = field(default_factory=lambda: _int_env("STAFF_ROLE_ID", 0))
     ss_role_id: int = field(default_factory=lambda: _int_env("SS_ROLE_ID", 0))
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))
     cadet_role_id: int = field(default_factory=lambda: _int_env("CADET_ROLE_ID", 0))
     fired_role_id: int = field(default_factory=lambda: _int_env("FIRED_ROLE_ID", 0))
+    
+    divider_position_id: int = field(default_factory=lambda: _int_env("DIVIDER_POSITION_ID", 0))
+    divider_department_id: int = field(default_factory=lambda: _int_env("DIVIDER_DEPARTMENT_ID", 0))
+    divider_rank_id: int = field(default_factory=lambda: _int_env("DIVIDER_RANK_ID", 0))
+    divider_access_id: int = field(default_factory=lambda: _int_env("DIVIDER_ACCESS_ID", 0))
+
     protected_role_ids: list[int] = field(
         default_factory=lambda: _int_list_env("PROTECTED_ROLE_IDS", [])
     )
@@ -137,7 +142,11 @@ class Settings:
         default_factory=lambda: _list_env("ROLES_TO_CLEANUP_NAMES", _DEFAULT_ROLES_TO_CLEANUP)
     )
     ranks: list[str] = field(
-        default_factory=lambda: _list_env("RANKS", _DEFAULT_RANKS)
+        default_factory=lambda: os.getenv("RANKS", "").split(",")
+    )
+    
+    position_role_ids: dict[str, int] = field(
+        default_factory=lambda: _dict_env("POSITION_ROLE_IDS", {})
     )
     application_methods: dict[str, str] = field(
         default_factory=lambda: _dict_env("APPLICATION_METHODS", _DEFAULT_APPLICATION_METHODS)
@@ -178,8 +187,6 @@ class Settings:
             warnings.append("BASE_ROLE_ID не задан")
         if self.cadet_role_id == 0:
             warnings.append("CADET_ROLE_ID не задан")
-        if self.staff_role_id == 0:
-            warnings.append("STAFF_ROLE_ID не задан")
         if self.ss_role_id == 0:
             warnings.append("SS_ROLE_ID не задан — is_ss() всегда False")
         return warnings

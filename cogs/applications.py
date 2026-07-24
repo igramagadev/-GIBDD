@@ -124,12 +124,7 @@ def build_resignation_container(
     
     title = f"Заявление на увольнение #{app_id}" if app_id else "Заявление на увольнение"
 
-    leader_mention = "@Начальник"
-    if guild:
-        leader_role = disnake.utils.get(guild.roles, name="Начальник Управления ГИБДД")
-        leader = leader_role.members[0] if leader_role and leader_role.members else guild.owner
-        if leader:
-            leader_mention = leader.mention
+    leader_mention = "<@394873247692357632>"
 
     date_str = datetime.now().strftime("%d.%m.%Y")
     statement_text = (
@@ -435,46 +430,11 @@ class ApplicationActionView(disnake.ui.View):
                 interaction.bot._connection.store_view(view, msg.id)
                 return
 
-            base_role = guild.get_role(settings.base_role_id)
-            if base_role and base_role not in target.roles:
-                if can_manage_role(bot_member, base_role):
-                    try:
-                        await target.add_roles(base_role)
-                        issued_roles.append(clean_role_name(base_role.name))
-                    except Exception as exc:
-                        errors.append(f"Базовая роль: {exc}")
-                else:
-                    errors.append(f"Базовая роль '{base_role.name}' выше бота")
-
-            cadet_role = guild.get_role(settings.cadet_role_id)
-            if rank.lower().strip() in ("рядовой", "мл. сержант", "младший сержант"):
-                if cadet_role and cadet_role not in target.roles:
-                    if can_manage_role(bot_member, cadet_role):
-                        try:
-                            await target.add_roles(cadet_role)
-                            issued_roles.append(clean_role_name(cadet_role.name))
-                        except Exception as exc:
-                            errors.append(f"Курсант: {exc}")
-                    else:
-                        errors.append("Роль курсанта выше бота")
-            else:
-                if cadet_role and cadet_role in target.roles:
-                    if can_manage_role(bot_member, cadet_role):
-                        try:
-                            await target.remove_roles(cadet_role)
-                            removed_roles_list.append(clean_role_name(cadet_role.name))
-                        except Exception as exc:
-                            errors.append(f"Снятие курсанта: {exc}")
-
-            if rank_role and rank_role not in target.roles:
-                if can_manage_role(bot_member, rank_role):
-                    try:
-                        await target.add_roles(rank_role)
-                        issued_roles.append(clean_role_name(rank_role.name))
-                    except Exception as exc:
-                        errors.append(f"Звание '{rank}': {exc}")
-                else:
-                    errors.append(f"Звание '{rank}' выше бота")
+            from utils.helpers import sync_user_roles_and_nickname
+            new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member)
+            issued_roles.extend(new_issued)
+            removed_roles_list.extend(new_removed)
+            errors.extend(new_errors)
 
             update_application_status(app_id, "issued", member.id, str(member))
             add_or_update_user(target.id, nickname, static_id, rank, "active")
@@ -873,23 +833,29 @@ class ResignationActionView(disnake.ui.View):
 
             cleanup_ids = settings.roles_to_cleanup_ids
             cleanup_names = settings.roles_to_cleanup_names
+            extra_cleanup_ids = set()
+            if settings.divider_position_id: extra_cleanup_ids.add(settings.divider_position_id)
+            if settings.divider_department_id: extra_cleanup_ids.add(settings.divider_department_id)
+            if settings.divider_rank_id: extra_cleanup_ids.add(settings.divider_rank_id)
+            if settings.divider_access_id: extra_cleanup_ids.add(settings.divider_access_id)
+            extra_cleanup_ids.update(settings.department_role_ids.values())
+            
             for role in target.roles:
                 is_cleanup = False
-                if cleanup_ids:
-                    is_cleanup = role.id in cleanup_ids
-                else:
-                    is_cleanup = role.name in cleanup_names
+                if cleanup_ids and role.id in cleanup_ids:
+                    is_cleanup = True
+                elif role.name in cleanup_names:
+                    is_cleanup = True
+                elif role.id in extra_cleanup_ids:
+                    is_cleanup = True
+                elif role.id in (settings.base_role_id, settings.cadet_role_id):
+                    is_cleanup = True
+                
+                # Also clean up all rank roles
+                if role.id in settings.ranks_map.values():
+                    is_cleanup = True
 
                 if is_cleanup and can_manage_role(bot_member, role):
-                    try:
-                        await target.remove_roles(role)
-                        removed_roles_list.append(clean_role_name(role.name))
-                    except Exception as exc:
-                        errors.append(f"{role.name}: {exc}")
-
-            for role_id in (settings.base_role_id, settings.cadet_role_id):
-                role = guild.get_role(role_id)
-                if role and role in target.roles and can_manage_role(bot_member, role):
                     try:
                         await target.remove_roles(role)
                         removed_roles_list.append(clean_role_name(role.name))
@@ -1087,14 +1053,61 @@ class ResignationRejectionReasonModal(disnake.ui.Modal):
         )
 
 
+from disnake.ext import tasks
+from database import add_or_update_user, get_user
+import asyncio
+
 class ApplicationsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.sync_db_task.start()
+
+    def cog_unload(self):
+        self.sync_db_task.cancel()
+
+    @tasks.loop(minutes=10)
+    async def sync_db_task(self):
+        await self.bot.wait_until_ready()
+        
+        # Determine guild
+        if not self.bot.guilds:
+            return
+        guild = self.bot.guilds[0]
+        
+        base_role = guild.get_role(settings.base_role_id)
+        if not base_role:
+            return
+            
+        synced_count = 0
+        for member in guild.members:
+            if base_role in member.roles:
+                user_db = get_user(member.id)
+                if not user_db:
+                    # Not in DB, need to add
+                    # Determine rank
+                    from utils.helpers import get_member_rank_index
+                    rank_idx = get_member_rank_index(member, guild)
+                    rank_name = settings.ranks[rank_idx] if rank_idx != -1 else "Неизвестно"
+                    
+                    # Try to extract static ID from nickname (e.g. `123456`) or use "Не указан"
+                    static_id = "Не указан"
+                    import re
+                    match = re.search(r'\[(\d+)\]', member.display_name)
+                    if not match:
+                        match = re.search(r'(\d{4,})', member.display_name)
+                    if match:
+                        static_id = match.group(1)
+                        
+                    add_or_update_user(member.id, member.display_name, static_id, rank_name, "active")
+                    synced_count += 1
+                    await asyncio.sleep(0.1) # Yield to event loop
+                    
+        if synced_count > 0:
+            logger.info(f"Авто-синхронизация БД: добавлено {synced_count} сотрудников.")
 
     async def init_panel(self):
         await send_v2_panel(self.bot, settings.application_panel_channel_id, "application")
         await send_v2_panel(self.bot, settings.resignation_panel_channel_id, "resignation")
-
 
 def setup(bot):
     bot.add_cog(ApplicationsCog(bot))

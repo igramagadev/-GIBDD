@@ -31,14 +31,12 @@ AUDIT_SESSIONS: dict[int, dict] = {}
 _AUDIT_SESSION_TTL = 600
 
 def _set_audit_session(user_id: int, data: dict) -> None:
-    """Создаёт сессию с меткой времени и очищает истёкшие."""
     _cleanup_audit_sessions()
     data["_ts"] = time.monotonic()
     AUDIT_SESSIONS[user_id] = data
 
 
 def _get_audit_session(user_id: int) -> dict | None:
-    """Возвращает сессию, если она не истекла. Иначе — удаляет и возвращает None."""
     session = AUDIT_SESSIONS.get(user_id)
     if not session:
         return None
@@ -49,7 +47,6 @@ def _get_audit_session(user_id: int) -> dict | None:
 
 
 def _cleanup_audit_sessions() -> None:
-    """Удаляет все истёкшие сессии."""
     now = time.monotonic()
     expired = [
         uid for uid, data in AUDIT_SESSIONS.items()
@@ -220,37 +217,9 @@ class AuditAcceptModal(disnake.ui.Modal):
             )
             return
 
-        base_role = guild.get_role(settings.base_role_id)
-        cadet_role = guild.get_role(settings.cadet_role_id)
-        if not base_role:
-            await interaction.followup.send(components=[v2_msg("Базовая роль не настроена.")], ephemeral=True)
-            return
-
         bot_member = guild.get_member(interaction.client.user.id)
-        errors = []
-        issued_roles = []
-
-        for role, label in ((base_role, "Базовая"), (cadet_role, "Курсант")):
-            if role and role not in target.roles:
-                if can_manage_role(bot_member, role):
-                    try:
-                        await target.add_roles(role)
-                        issued_roles.append(clean_role_name(role.name))
-                    except Exception as exc:
-                        errors.append(f"{label}: {exc}")
-                else:
-                    errors.append(f"{label} выше бота")
-
-        rank_role = find_rank_role(guild, rank_val)
-        if rank_role and rank_role not in target.roles:
-            if can_manage_role(bot_member, rank_role):
-                try:
-                    await target.add_roles(rank_role)
-                    issued_roles.append(clean_role_name(rank_role.name))
-                except Exception as exc:
-                    errors.append(f"Звание {rank_val}: {exc}")
-        elif not rank_role:
-            errors.append(f"Роль '{rank_val}' не найдена")
+        from utils.helpers import sync_user_roles_and_nickname
+        issued_roles, removed_roles, errors = await sync_user_roles_and_nickname(target, guild, rank_val, bot_member)
 
         add_audit_record(
             action="Принять",
@@ -367,23 +336,28 @@ class AuditDismissReasonModal(disnake.ui.Modal):
 
         cleanup_ids = settings.roles_to_cleanup_ids
         cleanup_names = settings.roles_to_cleanup_names
+        extra_cleanup_ids = set()
+        if settings.divider_position_id: extra_cleanup_ids.add(settings.divider_position_id)
+        if settings.divider_department_id: extra_cleanup_ids.add(settings.divider_department_id)
+        if settings.divider_rank_id: extra_cleanup_ids.add(settings.divider_rank_id)
+        if settings.divider_access_id: extra_cleanup_ids.add(settings.divider_access_id)
+        extra_cleanup_ids.update(settings.department_role_ids.values())
+        
         for role in target.roles:
             is_cleanup = False
-            if cleanup_ids:
-                is_cleanup = role.id in cleanup_ids
-            else:
-                is_cleanup = role.name in cleanup_names
+            if cleanup_ids and role.id in cleanup_ids:
+                is_cleanup = True
+            elif role.name in cleanup_names:
+                is_cleanup = True
+            elif role.id in extra_cleanup_ids:
+                is_cleanup = True
+            elif role.id in (settings.base_role_id, settings.cadet_role_id):
+                is_cleanup = True
+            
+            if role.id in settings.ranks_map.values():
+                is_cleanup = True
 
             if is_cleanup and can_manage_role(bot_member, role):
-                try:
-                    await target.remove_roles(role)
-                    removed_roles_list.append(clean_role_name(role.name))
-                except Exception as exc:
-                    errors.append(f"{role.name}: {exc}")
-
-        for role_id in (settings.base_role_id, settings.cadet_role_id):
-            role = guild.get_role(role_id)
-            if role and role in target.roles and can_manage_role(bot_member, role):
                 try:
                     await target.remove_roles(role)
                     removed_roles_list.append(clean_role_name(role.name))
@@ -497,43 +471,8 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             return
 
         bot_member = guild.get_member(interaction.client.user.id)
-        errors = []
-        removed_roles_list = []
-        issued_roles = []
-
-        old_role = find_rank_role(guild, old_rank) if old_rank != "Нет" else None
-        if old_role and old_role in target.roles:
-            if can_manage_role(bot_member, old_role):
-                try:
-                    await target.remove_roles(old_role)
-                    removed_roles_list.append(clean_role_name(old_role.name))
-                except Exception as exc:
-                    errors.append(f"Снятие: {exc}")
-            else:
-                errors.append(f"Роль '{old_role.name}' выше роли бота")
-
-        new_role = find_rank_role(guild, new_rank)
-        if new_role and new_role not in target.roles:
-            if can_manage_role(bot_member, new_role):
-                try:
-                    await target.add_roles(new_role)
-                    issued_roles.append(clean_role_name(new_role.name))
-                except Exception as exc:
-                    errors.append(f"Выдача: {exc}")
-            else:
-                errors.append(f"Роль '{new_role.name}' выше роли бота")
-        elif not new_role:
-            errors.append(f"Роль '{new_rank}' не найдена")
-
-        if action == "Promote" and is_rank_sergeant_or_above(new_rank):
-            cadet_role = guild.get_role(settings.cadet_role_id)
-            if cadet_role and cadet_role in target.roles:
-                if can_manage_role(bot_member, cadet_role):
-                    try:
-                        await target.remove_roles(cadet_role)
-                        removed_roles_list.append(clean_role_name(cadet_role.name))
-                    except Exception as exc:
-                        errors.append(f"Снятие курсанта: {exc}")
+        from utils.helpers import sync_user_roles_and_nickname
+        issued_roles, removed_roles_list, errors = await sync_user_roles_and_nickname(target, guild, new_rank, bot_member)
 
         action_verb = "повышает" if action == "Promote" else "понижает"
         audit_action = "Повысить" if action == "Promote" else "Понизить"
@@ -652,6 +591,183 @@ class AuditPromoteUserSelectView(disnake.ui.View):
         await interaction.response.send_modal(AuditPromoteDemoteModal("Promote"))
 
 
+class AuditTransferUserSelectView(disnake.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @disnake.ui.user_select(placeholder="Выберите сотрудника...", custom_id="audit:select_user_transfer")
+    async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
+        await interaction.response.defer(ephemeral=True)
+        target = select.values[0]
+        guild = interaction.guild
+
+        if not can_manage_audit(interaction.user):
+            await interaction.followup.send(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
+            return
+
+        if interaction.user.id == target.id:
+            await interaction.followup.send(components=[v2_msg("Нельзя переводить самого себя.")], ephemeral=True)
+            return
+
+        dept_ids = settings.department_role_ids
+        current_dept = "Нет"
+        for dept_name, role_id in dept_ids.items():
+            role = guild.get_role(role_id)
+            if role and role in target.roles:
+                current_dept = dept_name
+                break
+
+        app = get_user(target.id)
+        if not app:
+            await interaction.followup.send(components=[v2_msg("Пользователь не найден в БД.")], ephemeral=True)
+            return
+            
+        static_id = app["static_id"]
+
+        _set_audit_session(interaction.user.id, {
+            "target_id": target.id,
+            "action": "Transfer",
+            "static_id": static_id,
+            "old_department": current_dept,
+            "old_rank": app["rank"]
+        })
+
+        options = []
+        for dept_name in dept_ids:
+            if dept_name == current_dept:
+                continue
+            options.append(disnake.SelectOption(label=dept_name, value=dept_name))
+
+        if not options:
+            await interaction.followup.send(
+                components=[v2_msg("Нет доступных отделов для перевода.")],
+                ephemeral=True
+            )
+            return
+
+        select_menu = disnake.ui.Select(
+            placeholder="Выберите новый отдел...",
+            options=options,
+            custom_id="audit_select_department_persistent"
+        )
+        view = disnake.ui.View(timeout=None)
+        view.add_item(select_menu)
+        
+        # We need a callback for this select menu right here
+        async def _dept_callback(inter: disnake.MessageInteraction):
+            session = _get_audit_session(inter.user.id)
+            if not session:
+                await inter.response.send_message(components=[v2_msg("Сессия истекла.")], ephemeral=True)
+                return
+            session["new_department"] = inter.values[0]
+            await inter.response.send_modal(AuditTransferReasonModal())
+            
+        select_menu.callback = _dept_callback
+        
+        action_row = disnake.ui.ActionRow(*view.children)
+
+        container = disnake.ui.Container(
+            disnake.ui.TextDisplay(
+                f"Сотрудник: {target.mention}\n"
+                f"Static ID: {static_id}\n"
+                f"Текущий отдел: {current_dept}\n\n"
+                f"Выберите новый отдел для перевода:"
+            ),
+            action_row,
+            accent_colour=disnake.Colour(0x2C2F33)
+        )
+        await interaction.followup.send(components=[container], ephemeral=True)
+
+class AuditTransferReasonModal(disnake.ui.Modal):
+    def __init__(self):
+        components = [
+            disnake.ui.TextInput(
+                label="Причина перевода",
+                custom_id="reason",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph
+            )
+        ]
+        super().__init__(title="Перевод сотрудника", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        performer = interaction.user
+        guild = interaction.guild
+        reason_val = interaction.text_values["reason"].strip()
+
+        session = _get_audit_session(performer.id)
+        if not session:
+            await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
+            return
+
+        target_id = session["target_id"]
+        static_id = session["static_id"]
+        old_dept = session["old_department"]
+        new_dept = session["new_department"]
+        old_rank = session["old_rank"]
+
+        target = guild.get_member(target_id)
+        if not target:
+            await interaction.followup.send(components=[v2_msg("Сотрудник не найден.")], ephemeral=True)
+            return
+
+        bot_member = guild.get_member(interaction.client.user.id)
+        from utils.helpers import sync_user_roles_and_nickname
+        issued_roles, removed_roles_list, errors = await sync_user_roles_and_nickname(target, guild, old_rank, bot_member, override_dept=new_dept)
+
+        add_audit_record(
+            action="Перевод",
+            target_user_id=target.id,
+            target_user_name=str(target),
+            target_static_id=static_id,
+            target_rank="",
+            target_position=new_dept,
+            method="",
+            reason=f"Из {old_dept} в {new_dept}. {reason_val}",
+            performed_by_id=performer.id,
+            performed_by_name=str(performer),
+            issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
+            removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
+        )
+
+        await post_audit_container(
+            guild,
+            build_audit_container(
+                "переводит", performer, target, static_id,
+                old_department=old_dept, new_department=new_dept,
+                reason=reason_val,
+                issued_roles=", ".join(issued_roles) if issued_roles else None,
+                removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
+            )
+        )
+
+        staff_title = get_staff_title(performer, guild)
+        desc_dm = (
+            f"### Уведомление о переводе\n\n"
+            f"Вы были **переведены** {staff_title}.\n"
+            f"> **Из отдела:** {old_dept}\n"
+            f"> **В отдел:** {new_dept}\n"
+            f"> **Причина:** {reason_val}"
+        )
+        dm_container = disnake.ui.Container(
+            disnake.ui.TextDisplay(desc_dm),
+            accent_colour=disnake.Colour(0x2C2F33)
+        )
+        await send_dm(target, components=[dm_container])
+
+        logger.info(
+            "ПЕРЕВОД | Сотрудник: %s (ID: %s) | Static ID: %s | Из: %s | В: %s | Причина: %s | Выполнил: %s (ID: %s)",
+            target, target.id, static_id, old_dept, new_dept, reason_val, performer, performer.id
+        )
+
+        response = f"{target.mention}: {old_dept} → {new_dept}"
+        if errors:
+            response += f"\nОшибки: {', '.join(errors)}"
+        await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
+
+
 class AuditActionView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -663,6 +779,7 @@ class AuditActionView(disnake.ui.View):
             disnake.SelectOption(label="Уволить", value="Dismiss", description="Увольнение сотрудника"),
             disnake.SelectOption(label="Понизить в звании", value="Demote", description="Понижение в звании"),
             disnake.SelectOption(label="Повысить в звании", value="Promote", description="Повышение в звании"),
+            disnake.SelectOption(label="Перевести", value="Transfer", description="Перевод в другой отдел"),
         ],
         custom_id="audit_action_select"
     )
@@ -704,9 +821,15 @@ class AuditActionView(disnake.ui.View):
                 accent_colour=disnake.Colour(0x2C2F33)
             )
             await interaction.response.send_message(components=[container], ephemeral=True)
-
-
-
+        elif selected_value == "Transfer":
+            view = AuditTransferUserSelectView()
+            user_select_row = disnake.ui.ActionRow(*view.children)
+            container = disnake.ui.Container(
+                disnake.ui.TextDisplay("Выберите сотрудника для перевода:"),
+                user_select_row,
+                accent_colour=disnake.Colour(0x2C2F33)
+            )
+            await interaction.response.send_message(components=[container], ephemeral=True)
 class AuditCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
