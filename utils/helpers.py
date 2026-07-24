@@ -213,6 +213,22 @@ async def send_dm(user: disnake.abc.User, embed: disnake.Embed = None, component
 
 def find_rank_role(guild: disnake.Guild, rank_name: str) -> disnake.Role | None:
     cleaned_name = rank_name.strip().lower()
+    aliases = {
+        "мл. сержант": "младший сержант",
+        "мл.сержант": "младший сержант",
+        "мл.сержант полиции": "младший сержант",
+        "ст. сержант": "старший сержант",
+        "ст.сержант": "старший сержант",
+        "ст. прапорщик": "старший прапорщик",
+        "ст.прапорщик": "старший прапорщик",
+        "мл. лейтенант": "младший лейтенант",
+        "мл.лейтенант": "младший лейтенант",
+        "ст. лейтенант": "старший лейтенант",
+        "ст.лейтенант": "старший лейтенант",
+    }
+    if cleaned_name in aliases:
+        cleaned_name = aliases[cleaned_name]
+        
     for name, role_id in settings.ranks_map.items():
         if name.lower() == cleaned_name:
             role = guild.get_role(role_id)
@@ -304,12 +320,12 @@ def get_nickname_and_roles_for_rank(base_name: str, rank: str, current_dept: str
     rank_lower = rank.lower().strip()
     
     if rank_lower == "рядовой":
-        return (f"Курсант 1К | {base_name}", None, None)
+        return (f"Курсант 1К | {base_name}", None, "Академия ГИБДД")
     elif rank_lower in ("младший сержант", "мл.сержант", "мл. сержант", "мл.сержант полиции"):
-        return (f"Курсант 2К | {base_name}", None, None)
+        return (f"Курсант 2К | {base_name}", None, "Академия ГИБДД")
     
-    if rank_lower == "сержант":
-        if not current_dept or current_dept == "Нет":
+    if rank_lower not in ("рядовой", "младший сержант", "мл.сержант", "мл. сержант", "мл.сержант полиции"):
+        if not current_dept or current_dept in ("Нет", "Академия ГИБДД", "Академия"):
             import random
             current_dept = random.choice(["1-й батальон 1 полка", "2-й батальон 1 полка", "3-й батальон 1 полка"])
             
@@ -384,9 +400,11 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
             issued.append(clean_role_name(base.name))
         except Exception as e: errors.append(str(e))
 
-    div_ids = [settings.divider_position_id, settings.divider_department_id, settings.divider_rank_id]
-    if settings.ss_role_id and is_ss(target):
-        div_ids.append(settings.divider_access_id)
+    div_ids = []
+    if settings.divider_position_id: div_ids.append(settings.divider_position_id)
+    if settings.divider_department_id: div_ids.append(settings.divider_department_id)
+    if settings.divider_rank_id: div_ids.append(settings.divider_rank_id)
+    if settings.divider_access_id: div_ids.append(settings.divider_access_id)
     for d_id in div_ids:
         if d_id:
             d_role = guild.get_role(d_id)
@@ -441,8 +459,6 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
     base_name = target.display_name
     if " | " in base_name:
         base_name = base_name.split(" | ", 1)[1]
-    elif "] " in base_name:
-        base_name = base_name.split("] ", 1)[1]
         
     new_nick, new_pos_role_name, new_dept = get_nickname_and_roles_for_rank(base_name, rank, current_dept)
     

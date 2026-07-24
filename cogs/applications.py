@@ -284,6 +284,33 @@ class ApplicationRoleSelectView(disnake.ui.View):
         update_application_status(self.app_id, "issued", member.id, str(member))
         add_or_update_user(target.id, nickname, static_id, rank, "active")
 
+        add_audit_record(
+            action="Принять",
+            target_user_id=target.id,
+            target_user_name=str(target),
+            target_static_id=static_id,
+            target_rank=rank,
+            target_position="",
+            method=method,
+            reason=f"Одобрение заявки на роль (#{app_id}) (Ручная выдача)",
+            performed_by_id=member.id,
+            performed_by_name=str(member),
+            issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
+            removed_roles="Нет",
+        )
+        try:
+            from cogs.audit import post_audit_container, build_audit_container
+            await post_audit_container(
+                guild,
+                build_audit_container(
+                    "принимает", member, target, static_id,
+                    new_rank=rank, reason=f"Одобрение заявки на роль (#{app_id}) (Ручная выдача)",
+                    issued_roles=", ".join(issued_roles) if issued_roles else None,
+                )
+            )
+        except ImportError:
+            pass
+
         staff_title = get_staff_title(member, guild)
 
         status_text = f"Одобрено {staff_title}"
@@ -438,6 +465,35 @@ class ApplicationActionView(disnake.ui.View):
 
             update_application_status(app_id, "issued", member.id, str(member))
             add_or_update_user(target.id, nickname, static_id, rank, "active")
+
+            add_audit_record(
+                action="Принять",
+                target_user_id=target.id,
+                target_user_name=str(target),
+                target_static_id=static_id,
+                target_rank=rank,
+                target_position="Академия ГИБДД" if rank.lower() in ("рядовой", "младший сержант") else "",
+                method=method,
+                reason=f"Одобрение заявки на роль (#{app_id})",
+                performed_by_id=member.id,
+                performed_by_name=str(member),
+                issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
+                removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
+            )
+            
+            try:
+                from cogs.audit import post_audit_container, build_audit_container
+                await post_audit_container(
+                    guild,
+                    build_audit_container(
+                        "принимает", member, target, static_id,
+                        new_rank=rank, reason=f"Одобрение заявки на роль (#{app_id})",
+                        issued_roles=", ".join(issued_roles) if issued_roles else None,
+                        removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
+                    )
+                )
+            except ImportError:
+                logger.warning("Не удалось импортировать аудит в заявках")
 
             staff_title = get_staff_title(member, guild)
 

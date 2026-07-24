@@ -146,7 +146,7 @@ class Settings:
     )
     
     position_role_ids: dict[str, int] = field(
-        default_factory=lambda: _dict_env("POSITION_ROLE_IDS", {})
+        default_factory=lambda: _str_int_dict_env("POSITION_ROLE_IDS", {})
     )
     application_methods: dict[str, str] = field(
         default_factory=lambda: _dict_env("APPLICATION_METHODS", _DEFAULT_APPLICATION_METHODS)
