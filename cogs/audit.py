@@ -386,6 +386,14 @@ class AuditDismissReasonModal(disnake.ui.Modal):
                 issued_roles_list.append(clean_role_name(fired_role.name))
             except Exception as exc:
                 errors.append(f"Уволен: {exc}")
+                
+        base_name = target.display_name
+        if " | " in base_name:
+            base_name = base_name.split(" | ", 1)[1]
+        try:
+            await target.edit(nick=f"Уволен | {base_name}")
+        except Exception as exc:
+            errors.append(f"Ошибка изменения ника: {exc}")
 
         add_audit_record(
             action="Уволить",
@@ -639,6 +647,12 @@ class AuditTransferUserSelectView(disnake.ui.View):
         if interaction.user.id == target.id:
             await interaction.followup.send(components=[v2_msg("Нельзя переводить самого себя.")], ephemeral=True)
             return
+
+        if not isinstance(target, disnake.Member):
+            target = guild.get_member(target.id)
+            if not target:
+                await interaction.followup.send(components=[v2_msg("Пользователь не найден на сервере.")], ephemeral=True)
+                return
 
         dept_ids = settings.department_role_ids
         current_dept = "Нет"

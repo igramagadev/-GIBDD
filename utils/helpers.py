@@ -320,9 +320,9 @@ def get_nickname_and_roles_for_rank(base_name: str, rank: str, current_dept: str
     rank_lower = rank.lower().strip()
     
     if rank_lower == "рядовой":
-        return (f"Курсант 1К | {base_name}", None, "Академия ГИБДД")
+        return (f"Курсант 1К | {base_name}", "1-й курс", "Академия ГИБДД")
     elif rank_lower in ("младший сержант", "мл.сержант", "мл. сержант", "мл.сержант полиции"):
-        return (f"Курсант 2К | {base_name}", None, "Академия ГИБДД")
+        return (f"Курсант 2К | {base_name}", "2-й курс", "Академия ГИБДД")
     
     if rank_lower not in ("рядовой", "младший сержант", "мл.сержант", "мл. сержант", "мл.сержант полиции"):
         if not current_dept or current_dept in ("Нет", "Академия ГИБДД", "Академия"):
