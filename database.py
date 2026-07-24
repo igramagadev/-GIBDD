@@ -248,6 +248,33 @@ def add_to_blacklist(user_id: int, nickname: str, static_id: str,
         conn.close()
 
 
+def get_last_promotion_time(user_id: int) -> datetime | None:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT created_at FROM audit_records
+            WHERE target_user_id = ? AND action IN ('Повысить', 'Принять')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (user_id,)
+        ).fetchone()
+        if row and row["created_at"]:
+            val = row["created_at"]
+            try:
+                if "T" in val:
+                    return datetime.fromisoformat(val)
+                return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        return None
+    except sqlite3.Error as exc:
+        logger.error("Ошибка get_last_promotion_time(%s): %s", user_id, exc)
+        return None
+    finally:
+        conn.close()
+
+
 def remove_from_blacklist(user_id: int) -> None:
     conn = _connect()
     try:

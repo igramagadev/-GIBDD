@@ -564,6 +564,42 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
         )
         await send_dm(target, components=[dm_container])
 
+        if action == "Promote" and new_rank.lower().strip() in ("сержант", "сержант полиции"):
+            assigned_dept = None
+            from config.settings import settings
+            for dept_name, role_id in settings.department_role_ids.items():
+                r = guild.get_role(role_id)
+                if r and r in target.roles:
+                    assigned_dept = dept_name
+                    break
+
+            if assigned_dept and "батальон" in assigned_dept.lower():
+                com_1, dep_1 = 1442948864020709478, 1006102142395887677
+                com_2, dep_2 = 1040387515263234100, 470015386797080597
+                com_3, dep_3 = 1358696068694413443, 442335720661843968
+                
+                pings = ""
+                if "1-й" in assigned_dept: pings = f"<@{com_1}> <@{dep_1}>"
+                elif "2-й" in assigned_dept: pings = f"<@{com_2}> <@{dep_2}>"
+                elif "3-й" in assigned_dept: pings = f"<@{com_3}> <@{dep_3}>"
+
+                if pings:
+                    embed = disnake.Embed(
+                        title="Зачисление в батальон",
+                        color=disnake.Color(0x2C2F33)
+                    )
+                    embed.add_field(name="Инициатор", value=performer.mention, inline=False)
+                    embed.add_field(name="Пользователь", value=target.mention, inline=False)
+                    embed.add_field(name="Статик пользователя", value=static_id, inline=False)
+                    embed.add_field(name="Отдел", value=assigned_dept, inline=False)
+                    try:
+                        if settings.battalion_assignment_channel_id:
+                            ch = guild.get_channel(settings.battalion_assignment_channel_id)
+                            if ch:
+                                await ch.send(content=pings, embed=embed)
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление о зачислении: {e}")
+
         response = f"{target.mention}: {old_rank} → {new_rank}"
         if errors:
             response += f"\nОшибки: {', '.join(errors)}"
@@ -619,6 +655,22 @@ class AuditPromoteUserSelectView(disnake.ui.View):
         if not user_db:
             await interaction.response.send_message(components=[v2_msg("Пользователь не найден в базе данных.")], ephemeral=True)
             return
+
+        from database import get_last_promotion_time
+        from datetime import datetime, timezone
+        
+        last_promo = get_last_promotion_time(target.id)
+        if last_promo:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            diff = now - last_promo
+            if diff.total_seconds() < 86400:
+                hours = int((86400 - diff.total_seconds()) // 3600)
+                mins = int(((86400 - diff.total_seconds()) % 3600) // 60)
+                await interaction.response.send_message(
+                    components=[v2_msg(f"Сотрудник недавно получил должность. КД на повышение спадёт через {hours}ч {mins}м.")],
+                    ephemeral=True
+                )
+                return
 
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
@@ -679,8 +731,6 @@ class AuditTransferUserSelectView(disnake.ui.View):
 
         options = []
         for dept_name in dept_ids:
-            if dept_name == current_dept:
-                continue
             options.append(disnake.SelectOption(label=dept_name, value=dept_name))
 
         if not options:
@@ -704,6 +754,16 @@ class AuditTransferUserSelectView(disnake.ui.View):
             if not session:
                 await inter.response.send_message(components=[v2_msg("Сессия истекла.")], ephemeral=True)
                 return
+            
+            selected_dept = inter.values[0]
+            if selected_dept == session["old_department"]:
+                await inter.response.send_message(
+                    components=[v2_msg(f"Сотрудник уже состоит в {selected_dept}! Выберите другой отдел.")],
+                    ephemeral=True
+                )
+                return
+                
+            session["new_department"] = selected_dept
             needs_static = session.get("static_id") in ("Не указан", None, "")
             await inter.response.send_modal(AuditTransferReasonModal(needs_static=needs_static))
             

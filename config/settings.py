@@ -138,6 +138,10 @@ class Settings:
         default_factory=lambda: float(os.getenv("BUTTON_COOLDOWN_SECONDS", "3"))
     )
 
+    battalion_assignment_channel_id: int = field(
+        default_factory=lambda: _int_env("BATTALION_ASSIGNMENT_CHANNEL_ID", 0)
+    )
+
     roles_to_cleanup_names: list[str] = field(
         default_factory=lambda: _list_env("ROLES_TO_CLEANUP_NAMES", _DEFAULT_ROLES_TO_CLEANUP)
     )
