@@ -117,8 +117,9 @@ class Settings:
     audit_log_channel_id: int = field(
         default_factory=lambda: _int_env("AUDIT_LOG_CHANNEL_ID", 0)
     )
-
-
+    battalion_assignment_channel_id: int = field(
+        default_factory=lambda: _int_env("BATTALION_ASSIGNMENT_CHANNEL_ID", 0)
+    )
 
     ss_role_id: int = field(default_factory=lambda: _int_env("SS_ROLE_ID", 0))
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))

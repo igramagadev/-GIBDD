@@ -582,7 +582,7 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
 
             if assigned_dept and "батальон" in assigned_dept.lower():
                 com_1, dep_1 = 1442948864020709478, 1006102142395887677
-                com_2, dep_2 = 1040387515263234100, 470015386797080597
+                com_2, dep_2 = 1040387515263234100, 1385228673975844976
                 com_3, dep_3 = 1358696068694413443, 442335720661843968
                 
                 pings = ""
@@ -670,10 +670,17 @@ class AuditPromoteUserSelectView(disnake.ui.View):
         
         last_promo = get_last_promotion_time(target.id)
         if last_promo and current_rank_lower != "рядовой":
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            next_midnight = (last_promo + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            if now < next_midnight:
-                diff = next_midnight - now
+            msk_tz = timezone(timedelta(hours=3))
+            
+            # last_promo comes from DB as UTC naive datetime
+            last_promo_utc = last_promo.replace(tzinfo=timezone.utc)
+            last_promo_msk = last_promo_utc.astimezone(msk_tz)
+            
+            now_msk = datetime.now(timezone.utc).astimezone(msk_tz)
+            next_midnight_msk = (last_promo_msk + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if now_msk < next_midnight_msk:
+                diff = next_midnight_msk - now_msk
                 hours = int(diff.total_seconds() // 3600)
                 mins = int((diff.total_seconds() % 3600) // 60)
                 await interaction.response.send_message(
@@ -913,52 +920,36 @@ class AuditActionView(disnake.ui.View):
         custom_id="audit_action_select"
     )
     async def select_callback(self, select: disnake.ui.Select, interaction: disnake.MessageInteraction):
+        await interaction.response.defer(ephemeral=True)
         selected_value = select.values[0]
+        view = None
+        text = ""
+
         if selected_value == "Accept":
             view = AuditAcceptUserSelectView()
-            user_select_row = disnake.ui.ActionRow(*view.children)
-            container = disnake.ui.Container(
-                disnake.ui.TextDisplay("Выберите пользователя для принятия на службу:"),
-                user_select_row,
-                accent_colour=disnake.Colour(0x2C2F33)
-            )
-            await interaction.response.send_message(components=[container], ephemeral=True)
+            text = "Выберите пользователя для принятия на службу:"
         elif selected_value == "Dismiss":
             view = AuditDismissUserSelectView()
-            user_select_row = disnake.ui.ActionRow(*view.children)
-            container = disnake.ui.Container(
-                disnake.ui.TextDisplay("Выберите сотрудника для увольнения:"),
-                user_select_row,
-                accent_colour=disnake.Colour(0x2C2F33)
-            )
-            await interaction.response.send_message(components=[container], ephemeral=True)
+            text = "Выберите сотрудника для увольнения:"
         elif selected_value == "Demote":
             view = AuditDemoteUserSelectView()
-            user_select_row = disnake.ui.ActionRow(*view.children)
-            container = disnake.ui.Container(
-                disnake.ui.TextDisplay("Выберите сотрудника для понижения в звании:"),
-                user_select_row,
-                accent_colour=disnake.Colour(0x2C2F33)
-            )
-            await interaction.response.send_message(components=[container], ephemeral=True)
+            text = "Выберите сотрудника для понижения в звании:"
         elif selected_value == "Promote":
             view = AuditPromoteUserSelectView()
-            user_select_row = disnake.ui.ActionRow(*view.children)
-            container = disnake.ui.Container(
-                disnake.ui.TextDisplay("Выберите сотрудника для повышения в звании:"),
-                user_select_row,
-                accent_colour=disnake.Colour(0x2C2F33)
-            )
-            await interaction.response.send_message(components=[container], ephemeral=True)
+            text = "Выберите сотрудника для повышения в звании:"
         elif selected_value == "Transfer":
             view = AuditTransferUserSelectView()
+            text = "Выберите сотрудника для перевода:"
+
+        if view and text:
             user_select_row = disnake.ui.ActionRow(*view.children)
             container = disnake.ui.Container(
-                disnake.ui.TextDisplay("Выберите сотрудника для перевода:"),
+                disnake.ui.TextDisplay(text),
                 user_select_row,
                 accent_colour=disnake.Colour(0x2C2F33)
             )
-            await interaction.response.send_message(components=[container], ephemeral=True)
+            msg = await interaction.followup.send(components=[container], ephemeral=True, wait=True)
+            interaction.bot._connection.store_view(view, msg.id)
 class AuditCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot

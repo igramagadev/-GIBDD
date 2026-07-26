@@ -928,6 +928,21 @@ class ResignationActionView(disnake.ui.View):
                 except Exception as exc:
                     errors.append(f"Уволен: {exc}")
 
+            if nickname and nickname not in ("Не указан", ""):
+                base_name = nickname
+            else:
+                base_name = target.display_name
+                if " | " in base_name:
+                    base_name = base_name.split(" | ", 1)[1]
+            fired_nick = f"Уволен | {base_name}"
+            if len(fired_nick) > 32:
+                available = 32 - len("Уволен | ")
+                fired_nick = f"Уволен | {base_name[:available]}"
+            try:
+                await target.edit(nick=fired_nick)
+            except Exception as exc:
+                errors.append(f"Ошибка изменения ника: {exc}")
+
             update_application_status(app_id, "issued", member.id, str(member))
             set_user_status(target.id, "fired")
 
