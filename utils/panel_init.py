@@ -25,9 +25,26 @@ async def send_v2_panel(
             logger.warning("[%s] Канал %s не найден на сервере %s", panel_key, channel_id, guild.name)
             continue
 
+        panel_custom_ids = {
+            "application": "panel:application:submit",
+            "resignation": "panel:resignation:submit",
+            "audit": "panel:audit:open",
+        }
+        target_custom_id = panel_custom_ids.get(panel_key, "")
+
         deleted = 0
         async for message in channel.history(limit=history_limit):
-            if message.author.id == bot.user.id:
+            if message.author.id != bot.user.id:
+                continue
+            is_old_panel = False
+            for component in message.components:
+                for child in getattr(component, "children", []):
+                    if getattr(child, "custom_id", None) == target_custom_id:
+                        is_old_panel = True
+                        break
+                if is_old_panel:
+                    break
+            if is_old_panel:
                 try:
                     await message.delete()
                     deleted += 1
