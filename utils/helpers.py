@@ -374,7 +374,39 @@ def get_nickname_and_roles_for_rank(base_name: str, rank: str, current_dept: str
             
     return (nick, pos_role, current_dept)
         
-async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Guild, rank: str, bot_member: disnake.Member, override_dept: str = None) -> tuple[list[str], list[str], list[str]]:
+def fit_nickname(prefix: str, base_name: str, max_len: int = 32) -> str:
+    full = f"{prefix} | {base_name}"
+    if len(full) <= max_len:
+        return full
+    short_map = {
+        "Инсп.опер.реагирования": "Инсп.ОР",
+        "Инспектор БМТО": "Инсп.БМТО",
+        "Ст.Преподаватель ЦППС": "Ст.Преп.ЦППС",
+        "Преподаватель ЦППС": "Преп.ЦППС",
+        "Стажёр ЦППС": "Стаж.ЦППС",
+        "Старший Инспектор 1СБ": "Ст.Инсп.1СБ",
+        "Инспектор 1СБ": "Инсп.1СБ",
+        "Стажёр 1СБ": "Стаж.1СБ",
+        "Инспектор 1БП": "Инсп.1БП",
+        "Инспектор 2БП": "Инсп.2БП",
+        "Инспектор 3БП": "Инсп.3БП",
+        "Стажёр 1БП": "Стаж.1БП",
+        "Стажёр 2БП": "Стаж.2БП",
+        "Стажёр 3БП": "Стаж.3БП",
+        "Курсант 1К": "К.1К",
+        "Курсант 2К": "К.2К",
+    }
+    short_prefix = short_map.get(prefix, prefix)
+    full = f"{short_prefix} | {base_name}"
+    if len(full) <= max_len:
+        return full
+    available = max_len - len(short_prefix) - 3
+    if available > 0:
+        return f"{short_prefix} | {base_name[:available]}"
+    return full[:max_len]
+
+
+async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Guild, rank: str, bot_member: disnake.Member, override_dept: str = None, nickname_override: str = None) -> tuple[list[str], list[str], list[str]]:
     issued = []
     removed = []
     errors = []
@@ -456,9 +488,17 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
                 current_dept = dept_name
                 break
             
-    base_name = target.display_name
-    if " | " in base_name:
-        base_name = base_name.split(" | ", 1)[1]
+    if nickname_override:
+        base_name = nickname_override
+    else:
+        from database import get_user as _get_user
+        _udb = _get_user(target.id)
+        if _udb and _udb["nickname"] and _udb["nickname"] not in ("Не указан", ""):
+            base_name = _udb["nickname"]
+        else:
+            base_name = target.display_name
+            if " | " in base_name:
+                base_name = base_name.split(" | ", 1)[1]
         
     new_nick, new_pos_role_name, new_dept = get_nickname_and_roles_for_rank(base_name, rank, current_dept)
     
@@ -507,8 +547,10 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
             removed.append(clean_role_name(fired.name))
         except Exception: pass
         
+    prefix = new_nick.split(" | ", 1)[0] if " | " in new_nick else new_nick
+    final_nick = fit_nickname(prefix, base_name) if " | " in new_nick else new_nick[:32]
     try:
-        await target.edit(nick=new_nick[:32])
+        await target.edit(nick=final_nick)
     except Exception as e:
         errors.append(f"Ник: {e}")
 

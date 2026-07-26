@@ -387,11 +387,18 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             except Exception as exc:
                 errors.append(f"Уволен: {exc}")
                 
-        base_name = target.display_name
-        if " | " in base_name:
-            base_name = base_name.split(" | ", 1)[1]
+        if user_db and user_db["nickname"] and user_db["nickname"] not in ("Не указан", ""):
+            base_name = user_db["nickname"]
+        else:
+            base_name = target.display_name
+            if " | " in base_name:
+                base_name = base_name.split(" | ", 1)[1]
+        fired_nick = f"Уволен | {base_name}"
+        if len(fired_nick) > 32:
+            available = 32 - len("Уволен | ")
+            fired_nick = f"Уволен | {base_name[:available]}"
         try:
-            await target.edit(nick=f"Уволен | {base_name}")
+            await target.edit(nick=fired_nick)
         except Exception as exc:
             errors.append(f"Ошибка изменения ника: {exc}")
 
@@ -657,17 +664,18 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             return
 
         from database import get_last_promotion_time
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
         
         last_promo = get_last_promotion_time(target.id)
         if last_promo:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            diff = now - last_promo
-            if diff.total_seconds() < 86400:
-                hours = int((86400 - diff.total_seconds()) // 3600)
-                mins = int(((86400 - diff.total_seconds()) % 3600) // 60)
+            next_midnight = (last_promo + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            if now < next_midnight:
+                diff = next_midnight - now
+                hours = int(diff.total_seconds() // 3600)
+                mins = int((diff.total_seconds() % 3600) // 60)
                 await interaction.response.send_message(
-                    components=[v2_msg(f"Сотрудник недавно получил должность. КД на повышение спадёт через {hours}ч {mins}м.")],
+                    components=[v2_msg(f"Данный сотрудник уже повышался сегодня! КД на повышение спадёт в 00:00. Осталось: {hours}ч {mins}м.")],
                     ephemeral=True
                 )
                 return
@@ -748,7 +756,6 @@ class AuditTransferUserSelectView(disnake.ui.View):
         view = disnake.ui.View(timeout=None)
         view.add_item(select_menu)
         
-        # We need a callback for this select menu right here
         async def _dept_callback(inter: disnake.MessageInteraction):
             session = _get_audit_session(inter.user.id)
             if not session:
@@ -769,7 +776,7 @@ class AuditTransferUserSelectView(disnake.ui.View):
             
         select_menu.callback = _dept_callback
         
-        action_row = disnake.ui.ActionRow(*view.children)
+        action_row = disnake.ui.ActionRow(select_menu)
 
         container = disnake.ui.Container(
             disnake.ui.TextDisplay(
@@ -956,6 +963,25 @@ class AuditCog(commands.Cog):
 
     async def init_panel(self):
         await send_v2_panel(self.bot, settings.audit_panel_channel_id, "audit")
+
+    @commands.Cog.listener()
+    async def on_message_interaction(self, interaction: disnake.MessageInteraction):
+        if interaction.data.custom_id != "audit_select_department_persistent":
+            return
+        session = _get_audit_session(interaction.user.id)
+        if not session:
+            await interaction.response.send_message(components=[v2_msg("Сессия истекла.")], ephemeral=True)
+            return
+        selected_dept = interaction.values[0]
+        if selected_dept == session["old_department"]:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Сотрудник уже состоит в {selected_dept}! Выберите другой отдел.")],
+                ephemeral=True
+            )
+            return
+        session["new_department"] = selected_dept
+        needs_static = session.get("static_id") in ("Не указан", None, "")
+        await interaction.response.send_modal(AuditTransferReasonModal(needs_static=needs_static))
 
 
 def setup(bot):

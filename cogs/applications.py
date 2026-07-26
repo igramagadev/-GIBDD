@@ -458,7 +458,7 @@ class ApplicationActionView(disnake.ui.View):
                 return
 
             from utils.helpers import sync_user_roles_and_nickname
-            new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member)
+            new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member, nickname_override=nickname)
             issued_roles.extend(new_issued)
             removed_roles_list.extend(new_removed)
             errors.extend(new_errors)
@@ -907,7 +907,6 @@ class ResignationActionView(disnake.ui.View):
                 elif role.id in (settings.base_role_id, settings.cadet_role_id):
                     is_cleanup = True
                 
-                # Also clean up all rank roles
                 if role.id in settings.ranks_map.values():
                     is_cleanup = True
 
@@ -1125,7 +1124,6 @@ class ApplicationsCog(commands.Cog):
     async def sync_db_task(self):
         await self.bot.wait_until_ready()
         
-        # Determine guild
         if not self.bot.guilds:
             return
         guild = self.bot.guilds[0]
@@ -1139,8 +1137,6 @@ class ApplicationsCog(commands.Cog):
             if base_role in member.roles:
                 user_db = get_user(member.id)
                 if not user_db:
-                    # Not in DB, need to add
-                    # Determine rank
                     from utils.helpers import get_member_rank_index
                     rank_idx = get_member_rank_index(member, guild)
                     rank_name = settings.ranks[rank_idx] if rank_idx != -1 else "Неизвестно"
@@ -1148,7 +1144,7 @@ class ApplicationsCog(commands.Cog):
                     static_id = "Не указан"
                     add_or_update_user(member.id, member.display_name, static_id, rank_name, "active")
                     synced_count += 1
-                    await asyncio.sleep(0.1) # Yield to event loop
+                    await asyncio.sleep(0.1)
                     
         if synced_count > 0:
             logger.info(f"Авто-синхронизация БД: добавлено {synced_count} сотрудников.")
