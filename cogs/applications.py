@@ -1,3 +1,4 @@
+from config import settings
 import logging
 from datetime import datetime
 
@@ -125,11 +126,12 @@ def build_resignation_container(
     title = f"Заявление на увольнение #{app_id}" if app_id else "Заявление на увольнение"
 
     leader_mention = "<@394873247692357632>"
+    ss_ping = f"<@{settings.ss_role_id}"
 
     date_str = datetime.now().strftime("%d.%m.%Y")
     statement_text = (
         "Начальнику Управления ГИБДД ГУ МВД по г. Москве и Московской области Генерал-полковнику полиции\n"
-        f"{leader_mention}\n\n"
+        f"{leader_mention} {ss_ping}\n\n"
         f"от {rank} полиции {nickname}\n\n"
         "**Заявление**\n\n"
         f"Я, {nickname}, находящийся в звании {rank} полиции, служебное удостоверение № {static_id} "
