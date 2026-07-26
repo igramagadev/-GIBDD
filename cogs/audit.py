@@ -666,8 +666,10 @@ class AuditPromoteUserSelectView(disnake.ui.View):
         from database import get_last_promotion_time
         from datetime import datetime, timezone, timedelta
         
+        current_rank_lower = user_db["rank"].strip().lower() if user_db.get("rank") else ""
+        
         last_promo = get_last_promotion_time(target.id)
-        if last_promo:
+        if last_promo and current_rank_lower != "рядовой":
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             next_midnight = (last_promo + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             if now < next_midnight:
