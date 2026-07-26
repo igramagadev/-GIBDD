@@ -36,14 +36,23 @@ async def send_v2_panel(
         async for message in channel.history(limit=history_limit):
             if message.author.id != bot.user.id:
                 continue
-            is_old_panel = False
-            for component in message.components:
-                for child in getattr(component, "children", []):
-                    if getattr(child, "custom_id", None) == target_custom_id:
-                        is_old_panel = True
-                        break
-                if is_old_panel:
-                    break
+            def _find_custom_id(comps, target):
+                for c in comps:
+                    if getattr(c, "custom_id", None) == target:
+                        return True
+                    if _find_custom_id(getattr(c, "children", []), target):
+                        return True
+                    if _find_custom_id(getattr(c, "components", []), target):
+                        return True
+                    if hasattr(c, "to_dict"):
+                        try:
+                            if target in str(c.to_dict()):
+                                return True
+                        except Exception:
+                            pass
+                return False
+
+            is_old_panel = _find_custom_id(message.components, target_custom_id)
             if is_old_panel:
                 try:
                     await message.delete()
