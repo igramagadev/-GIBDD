@@ -50,33 +50,47 @@ def build_application_container(
     docs: str = "",
     action_row: disnake.ui.ActionRow = None
 ) -> disnake.ui.Container:
+    joined_at = getattr(user, "joined_at", None)
+    if joined_at:
+        joined_timestamp = int(joined_at.timestamp())
+        joined_str = f"<t:{joined_timestamp}:f> (<t:{joined_timestamp}:R>)"
+    else:
+        joined_str = "Неизвестно"
+
+    profile_text = (
+        f"**Пользователь:** {user.mention}\n"
+        f"**ID:** `{user.id}`\n"
+        f"**Присоединился:** {joined_str}"
+    )
+
     title = f"Заявка на роль #{app_id}" if app_id else "Новая заявка на роль"
-    
-    desc = f"### {title}\n"
-    desc += "*Электронное заявление*\n\n"
-
-    lines = []
-    lines.append(f"**Пользователь**: {user.mention} ({user.id})")
-    lines.append(f"**Никнейм (игровой ник)**: {nickname}")
-    lines.append(f"**Static ID**: `{static_id}`")
-    lines.append(f"**Способ подачи**: {method}")
-    lines.append(f"**Звание**: {rank}")
-
-    if docs and not validate_docs_url(docs):
-        lines.append(f"**Документы**: {docs}")
-
-    desc += "\n".join(f"> {line}" for line in lines)
 
     components = [
-        disnake.ui.TextDisplay(desc),
+        disnake.ui.TextDisplay(f"### {title}"),
+        disnake.ui.Section(
+            disnake.ui.TextDisplay(profile_text),
+            accessory=disnake.ui.Thumbnail(media=user.display_avatar.url)
+        ),
         disnake.ui.Separator()
     ]
 
-    if docs and validate_docs_url(docs):
-        components.append(disnake.ui.TextDisplay("> **Документы**:"))
-        components.append(disnake.ui.MediaGallery(disnake.ui.MediaGalleryItem(media=docs)))
-        components.append(disnake.ui.Separator())
+    fields_text = (
+        f"**Никнейм (игровой ник):**\n```\n{nickname}\n```\n"
+        f"**Static ID:**\n```\n{static_id}\n```\n"
+        f"**Способ подачи:**\n```\n{method}\n```\n"
+        f"**Звание:**\n```\n{rank}\n```"
+    )
 
+    if docs and not validate_docs_url(docs):
+        fields_text += f"\n\n**Ссылка на документы:**\n{docs}"
+
+    components.append(disnake.ui.TextDisplay(fields_text))
+
+    if docs and validate_docs_url(docs):
+        components.append(disnake.ui.Separator())
+        components.append(disnake.ui.MediaGallery(disnake.ui.MediaGalleryItem(media=docs)))
+
+    components.append(disnake.ui.Separator())
     components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
 
     if action_row:
@@ -696,11 +710,18 @@ class OtherOrgModal(disnake.ui.Modal):
                 max_length=50,
             ),
             disnake.ui.TextInput(
-                label="Кто вы / Откуда (ФСБ, ФСНВГ, ЦГБ...)",
-                custom_id="org_info",
-                placeholder="Например: ФСБ, Майор",
+                label="Гос. Организация",
+                custom_id="org_name",
+                placeholder="ФСБ, ФСНВГ, ЦГБ, Правительство...",
                 required=True,
-                max_length=200,
+                max_length=100,
+            ),
+            disnake.ui.TextInput(
+                label="Звание / Должность",
+                custom_id="org_rank",
+                placeholder="Например: Майор, Министр",
+                required=True,
+                max_length=50,
             ),
             disnake.ui.TextInput(
                 label="Ссылка на доказательства",
@@ -719,11 +740,12 @@ class OtherOrgModal(disnake.ui.Modal):
         user = interaction.user
         nickname_str = interaction.text_values["nickname"].strip()
         static_id_str = interaction.text_values["static_id"].strip()
-        org_info_str = interaction.text_values["org_info"].strip()
+        org_name_str = interaction.text_values["org_name"].strip()
+        org_rank_str = interaction.text_values["org_rank"].strip()
         docs_str = interaction.text_values["docs"].strip()
 
-        method_str = f"Другие органы: {org_info_str}"
-        rank_str = "Перевод из другого органа"
+        method_str = f"Запрос ролей: {org_name_str}"
+        rank_str = org_rank_str
 
         await _submit_application(
             interaction, user, guild,
@@ -805,55 +827,46 @@ class ResignationModal(disnake.ui.Modal):
         self.user_id = user_id
 
         cached_reason = get_cached_val(user_id, "ResignationModal", "reason", "")
+        default_nickname = get_cached_val(user_id, "ResignationModal", "nickname", "")
+        default_static_id = get_cached_val(user_id, "ResignationModal", "static_id", "")
+        default_rank = get_cached_val(user_id, "ResignationModal", "current_rank", "")
 
-        if user_data:
-            self.nickname, self.static_id, self.rank = user_data
-            components = [
-                disnake.ui.TextInput(
-                    label="Причина увольнения",
-                    custom_id="reason",
-                    required=True,
-                    max_length=500,
-                    style=disnake.TextInputStyle.paragraph,
-                    value=cached_reason
-                )
-            ]
-        else:
-            cached_nickname = get_cached_val(user_id, "ResignationModal", "nickname", "")
-            cached_static_id = get_cached_val(user_id, "ResignationModal", "static_id", "")
-            cached_rank = get_cached_val(user_id, "ResignationModal", "current_rank", "")
+        if not default_nickname and user_data:
+            default_nickname = user_data[0]
+        if not default_static_id and user_data:
+            default_static_id = user_data[1]
 
-            components = [
-                disnake.ui.TextInput(
-                    label="Имя Фамилия (Никнейм)",
-                    custom_id="nickname",
-                    required=True,
-                    max_length=50,
-                    value=cached_nickname
-                ),
-                disnake.ui.TextInput(
-                    label="Номер удостоверения (Static ID)",
-                    custom_id="static_id",
-                    required=True,
-                    max_length=50,
-                    value=cached_static_id
-                ),
-                disnake.ui.TextInput(
-                    label="Текущее звание",
-                    custom_id="current_rank",
-                    required=True,
-                    max_length=50,
-                    value=cached_rank
-                ),
-                disnake.ui.TextInput(
-                    label="Причина увольнения",
-                    custom_id="reason",
-                    required=True,
-                    max_length=500,
-                    style=disnake.TextInputStyle.paragraph,
-                    value=cached_reason
-                )
-            ]
+        components = [
+            disnake.ui.TextInput(
+                label="Имя Фамилия (Никнейм)",
+                custom_id="nickname",
+                required=True,
+                max_length=50,
+                value=default_nickname
+            ),
+            disnake.ui.TextInput(
+                label="Номер удостоверения (Static ID)",
+                custom_id="static_id",
+                required=True,
+                max_length=50,
+                value=default_static_id
+            ),
+            disnake.ui.TextInput(
+                label="Текущее звание",
+                custom_id="current_rank",
+                required=True,
+                max_length=50,
+                value=default_rank
+            ),
+            disnake.ui.TextInput(
+                label="Причина увольнения",
+                custom_id="reason",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+                value=cached_reason
+            )
+        ]
         super().__init__(title="Заявление на увольнение", components=components)
 
     async def callback(self, interaction: disnake.ModalInteraction):
@@ -861,22 +874,15 @@ class ResignationModal(disnake.ui.Modal):
         guild = interaction.guild
         user = interaction.user
 
-        if self.user_data:
-            nickname_str = self.nickname
-            static_id_str = self.static_id
-            rank_str = self.rank
-            reason_str = interaction.text_values["reason"].strip()
-        else:
-            nickname_str = interaction.text_values["nickname"].strip()
-            static_id_str = interaction.text_values["static_id"].strip()
-            rank_str = interaction.text_values["current_rank"].strip()
-            reason_str = interaction.text_values["reason"].strip()
+        nickname_str = interaction.text_values["nickname"].strip()
+        static_id_str = interaction.text_values["static_id"].strip()
+        rank_str = interaction.text_values["current_rank"].strip()
+        reason_str = interaction.text_values["reason"].strip()
 
         set_cached_val(self.user_id, "ResignationModal", "reason", reason_str)
-        if not self.user_data:
-            set_cached_val(self.user_id, "ResignationModal", "nickname", nickname_str)
-            set_cached_val(self.user_id, "ResignationModal", "static_id", static_id_str)
-            set_cached_val(self.user_id, "ResignationModal", "current_rank", rank_str)
+        set_cached_val(self.user_id, "ResignationModal", "nickname", nickname_str)
+        set_cached_val(self.user_id, "ResignationModal", "static_id", static_id_str)
+        set_cached_val(self.user_id, "ResignationModal", "current_rank", rank_str)
 
         review_channel = guild.get_channel(settings.resignation_review_channel_id)
         if not review_channel:
