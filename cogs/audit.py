@@ -577,7 +577,6 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             for dept_name, role_id in settings.department_role_ids.items():
                 r = guild.get_role(role_id)
                 if r:
-                    # Check both target roles (if already had it) and issued_roles (if randomly assigned just now)
                     if r in target.roles or r.name in issued_roles:
                         assigned_dept = dept_name
                         break

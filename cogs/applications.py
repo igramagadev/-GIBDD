@@ -125,7 +125,7 @@ def build_resignation_container(
     
     title = f"Заявление на увольнение #{app_id}" if app_id else "Заявление на увольнение"
 
-    leader_mention = "<@394873247692357632>"
+    leader_mention = "<@&394873247692357632>"
     ss_ping = f"<@{settings.ss_role_id}>"
 
     date_str = datetime.now().strftime("%d.%m.%Y")
