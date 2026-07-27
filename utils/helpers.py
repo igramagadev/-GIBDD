@@ -406,6 +406,27 @@ def fit_nickname(prefix: str, base_name: str, max_len: int = 32) -> str:
     return full[:max_len]
 
 
+STANDARD_PREFIXES = {
+    "Инсп.опер.реагирования", "Инсп.ОР",
+    "Инспектор БМТО", "Инсп.БМТО",
+    "Ст.Преподаватель ЦППС", "Ст.Преп.ЦППС",
+    "Преподаватель ЦППС", "Преп.ЦППС",
+    "Стажёр ЦППС", "Стаж.ЦППС",
+    "Старший Инспектор 1СБ", "Ст.Инсп.1СБ",
+    "Инспектор 1СБ", "Инсп.1СБ",
+    "Стажёр 1СБ", "Стаж.1СБ",
+    "Инспектор 1БП", "Инсп.1БП",
+    "Инспектор 2БП", "Инсп.2БП",
+    "Инспектор 3БП", "Инсп.3БП",
+    "Стажёр БП", "Инспектор БП",
+    "Стажёр 1БП", "Стаж.1БП",
+    "Стажёр 2БП", "Стаж.2БП",
+    "Стажёр 3БП", "Стаж.3БП",
+    "Курсант 1К", "К.1К",
+    "Курсант 2К", "К.2К",
+    "Уволен"
+}
+
 async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Guild, rank: str, bot_member: disnake.Member, override_dept: str = None, nickname_override: str = None) -> tuple[list[str], list[str], list[str]]:
     issued = []
     removed = []
@@ -497,8 +518,9 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
             base_name = _udb["nickname"]
         else:
             base_name = target.display_name
-            if " | " in base_name:
-                base_name = base_name.split(" | ", 1)[1]
+            
+    if " | " in base_name:
+        base_name = base_name.rsplit(" | ", 1)[-1].strip()
         
     new_nick, new_pos_role_name, new_dept = get_nickname_and_roles_for_rank(base_name, rank, current_dept)
     
@@ -549,9 +571,18 @@ async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Gu
         
     prefix = new_nick.split(" | ", 1)[0] if " | " in new_nick else new_nick
     final_nick = fit_nickname(prefix, base_name) if " | " in new_nick else new_nick[:32]
-    try:
-        await target.edit(nick=final_nick)
-    except Exception as e:
-        errors.append(f"Ник: {e}")
+    
+    should_change_nick = True
+    current_nick = target.display_name
+    if " | " in current_nick:
+        current_prefix = current_nick.split(" | ", 1)[0].strip()
+        if current_prefix not in STANDARD_PREFIXES:
+            should_change_nick = False
+
+    if should_change_nick:
+        try:
+            await target.edit(nick=final_nick)
+        except Exception as e:
+            errors.append(f"Ник: {e}")
 
     return issued, removed, errors

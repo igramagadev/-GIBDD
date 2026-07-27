@@ -11,7 +11,7 @@ class ApplicationPanelActions(ui.View):
         super().__init__(timeout=None)
 
     @ui.button(
-        label="Подать заявку на роль",
+        label="Подать заявку (Сотрудник)",
         style=disnake.ButtonStyle.primary,
         custom_id="panel:application:submit",
     )
@@ -37,6 +37,34 @@ class ApplicationPanelActions(ui.View):
             return
 
         await interaction.response.send_modal(ApplicationModal(user_id=interaction.user.id))
+
+    @ui.button(
+        label="Подать заявку (Другие органы)",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="panel:application:other_org",
+    )
+    async def other_org_button(self, button: ui.Button, interaction: disnake.MessageInteraction) -> None:
+        remaining = interaction_guard.check_cooldown(
+            interaction.user.id, "panel:application_org", settings.button_cooldown_seconds
+        )
+        if remaining is not None:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Подождите {remaining:.1f} сек. перед повторным нажатием.")],
+                ephemeral=True,
+            )
+            return
+
+        from database import is_blacklisted
+        from cogs.applications import OtherOrgModal
+
+        if is_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                components=[v2_msg(" Вы внесены в Чёрный Список (ЧС) и не можете отправлять заявки!")],
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(OtherOrgModal(user_id=interaction.user.id))
 
 
 class ResignationPanelActions(ui.View):

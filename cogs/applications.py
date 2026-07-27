@@ -50,47 +50,33 @@ def build_application_container(
     docs: str = "",
     action_row: disnake.ui.ActionRow = None
 ) -> disnake.ui.Container:
-    joined_at = getattr(user, "joined_at", None)
-    if joined_at:
-        joined_timestamp = int(joined_at.timestamp())
-        joined_str = f"<t:{joined_timestamp}:f> (<t:{joined_timestamp}:R>)"
-    else:
-        joined_str = "Неизвестно"
-
-    profile_text = (
-        f"**Пользователь:** {user.mention}\n"
-        f"**ID:** `{user.id}`\n"
-        f"**Присоединился:** {joined_str}"
-    )
-
     title = f"Заявка на роль #{app_id}" if app_id else "Новая заявка на роль"
+    
+    desc = f"### {title}\n"
+    desc += "*Электронное заявление*\n\n"
+
+    lines = []
+    lines.append(f"**Пользователь**: {user.mention} ({user.id})")
+    lines.append(f"**Никнейм (игровой ник)**: {nickname}")
+    lines.append(f"**Static ID**: `{static_id}`")
+    lines.append(f"**Способ подачи**: {method}")
+    lines.append(f"**Звание**: {rank}")
+
+    if docs and not validate_docs_url(docs):
+        lines.append(f"**Документы**: {docs}")
+
+    desc += "\n".join(f"> {line}" for line in lines)
 
     components = [
-        disnake.ui.TextDisplay(f"### {title}"),
-        disnake.ui.Section(
-            disnake.ui.TextDisplay(profile_text),
-            accessory=disnake.ui.Thumbnail(media=user.display_avatar.url)
-        ),
+        disnake.ui.TextDisplay(desc),
         disnake.ui.Separator()
     ]
 
-    fields_text = (
-        f"**Никнейм (игровой ник):**\n```\n{nickname}\n```\n"
-        f"**Static ID:**\n```\n{static_id}\n```\n"
-        f"**Способ подачи:**\n```\n{method}\n```\n"
-        f"**Желаемое звание:**\n```\n{rank}\n```"
-    )
-
-    if docs:
-        fields_text += f"\n\n**Ссылка на документы:**\n{docs}"
-
-    components.append(disnake.ui.TextDisplay(fields_text))
-
     if docs and validate_docs_url(docs):
-        components.append(disnake.ui.Separator())
+        components.append(disnake.ui.TextDisplay("> **Документы**:"))
         components.append(disnake.ui.MediaGallery(disnake.ui.MediaGalleryItem(media=docs)))
+        components.append(disnake.ui.Separator())
 
-    components.append(disnake.ui.Separator())
     components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
 
     if action_row:
@@ -613,8 +599,9 @@ class ApplicationModal(disnake.ui.Modal):
                 value=cached_method
             ),
             disnake.ui.TextInput(
-                label="Желаемое звание",
+                label="Звание",
                 custom_id="desired_rank",
+                placeholder="Рядовой",
                 required=True,
                 max_length=50,
                 value=cached_rank
@@ -623,7 +610,6 @@ class ApplicationModal(disnake.ui.Modal):
         super().__init__(title="Заявка на роль", components=components)
 
     async def callback(self, interaction: disnake.ModalInteraction):
-        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         user = interaction.user
         method_str = interaction.text_values["method"].strip()
@@ -637,69 +623,180 @@ class ApplicationModal(disnake.ui.Modal):
         set_cached_val(self.user_id, "ApplicationModal", "method", method_str)
 
         if get_rank_index(rank_str) == -1:
-            available = ", ".join(settings.ranks)
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 components=[v2_msg(
                     f"Звание \"{rank_str}\" не найдено в списке допустимых.\n"
-                    f"Доступные звания: {available}"
+                    f"Доступные звания: {', '.join(settings.ranks)}"
                 )],
                 ephemeral=True,
             )
             return
 
-        review_channel = guild.get_channel(settings.application_review_channel_id)
-        if not review_channel:
-            await interaction.followup.send(
-                components=[v2_msg("Канал для заявок не найден! Обратитесь к администратору.")],
-                ephemeral=True,
+        if rank_str.lower().strip() != "рядовой":
+            await interaction.response.send_modal(
+                ApplicationDocsModal(
+                    user_id=self.user_id,
+                    nickname=nickname_str,
+                    static_id=static_id_str,
+                    method=method_str,
+                    rank=rank_str,
+                )
             )
             return
 
-        view = ApplicationActionView()
-        action_row = disnake.ui.ActionRow(*view.children)
-        container = build_application_container(
-            app_id="",
-            user=user,
-            nickname=nickname_str,
-            static_id=static_id_str,
-            method=method_str,
-            rank=rank_str,
-            status_text="Ожидает рассмотрения",
-            action_row=action_row
-        )
-        app_message = await review_channel.send(components=[container])
+        await interaction.response.defer(ephemeral=True)
+        await _submit_application(interaction, user, guild, nickname_str, static_id_str, method_str, rank_str)
 
-        app_id = add_application(
-            user_id=user.id,
-            user_name=str(user),
-            nickname=nickname_str,
-            static_id=static_id_str,
-            rank=rank_str,
-            method=method_str,
-            message_id=app_message.id,
-        )
 
-        container_with_id = build_application_container(
-            app_id=app_id,
-            user=user,
-            nickname=nickname_str,
-            static_id=static_id_str,
-            method=method_str,
-            rank=rank_str,
-            status_text="Ожидает рассмотрения",
-            action_row=action_row
-        )
-        await app_message.edit(components=[container_with_id])
+class ApplicationDocsModal(disnake.ui.Modal):
+    def __init__(self, user_id: int, nickname: str, static_id: str, method: str, rank: str):
+        self.user_id = user_id
+        self.nickname = nickname
+        self.static_id = static_id
+        self.method = method
+        self.rank = rank
 
-        logger.info(
-            "НОВАЯ ЗАЯВКА | Номер: #%s | Пользователь: %s (ID: %s) | Ник: %s | Static ID: %s | Желаемое звание: %s | Способ: %s",
-            app_id, user, user.id, nickname_str, static_id_str, rank_str, method_str
+        components = [
+            disnake.ui.TextInput(
+                label="Ссылка на доказательства",
+                custom_id="docs",
+                placeholder="Вставьте ссылку на скриншот / документ",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            )
+        ]
+        super().__init__(title="Доказательства (звание выше Рядового)", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        docs_str = interaction.text_values["docs"].strip()
+        set_cached_val(self.user_id, "ApplicationModal", "docs", docs_str)
+        await _submit_application(
+            interaction, interaction.user, interaction.guild,
+            self.nickname, self.static_id, self.method, self.rank, docs=docs_str
         )
 
+
+class OtherOrgModal(disnake.ui.Modal):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+        components = [
+            disnake.ui.TextInput(
+                label="Никнейм (игровой ник)",
+                custom_id="nickname",
+                required=True,
+                max_length=50,
+            ),
+            disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                required=True,
+                max_length=50,
+            ),
+            disnake.ui.TextInput(
+                label="Кто вы / Откуда (ФСБ, ФСНВГ, ЦГБ...)",
+                custom_id="org_info",
+                placeholder="Например: ФСБ, Майор",
+                required=True,
+                max_length=200,
+            ),
+            disnake.ui.TextInput(
+                label="Ссылка на доказательства",
+                custom_id="docs",
+                placeholder="Вставьте ссылку на скриншот / документ",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            ),
+        ]
+        super().__init__(title="Заявка (Другие органы)", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        nickname_str = interaction.text_values["nickname"].strip()
+        static_id_str = interaction.text_values["static_id"].strip()
+        org_info_str = interaction.text_values["org_info"].strip()
+        docs_str = interaction.text_values["docs"].strip()
+
+        method_str = f"Другие органы: {org_info_str}"
+        rank_str = "Перевод из другого органа"
+
+        await _submit_application(
+            interaction, user, guild,
+            nickname_str, static_id_str, method_str, rank_str, docs=docs_str
+        )
+
+
+async def _submit_application(
+    interaction: disnake.ModalInteraction,
+    user: disnake.Member,
+    guild: disnake.Guild,
+    nickname_str: str,
+    static_id_str: str,
+    method_str: str,
+    rank_str: str,
+    docs: str = "",
+):
+    review_channel = guild.get_channel(settings.application_review_channel_id)
+    if not review_channel:
         await interaction.followup.send(
-            components=[v2_msg(f"Заявка отправлена. Номер: #{app_id}")],
+            components=[v2_msg("Канал для заявок не найден! Обратитесь к администратору.")],
             ephemeral=True,
         )
+        return
+
+    view = ApplicationActionView()
+    action_row = disnake.ui.ActionRow(*view.children)
+    container = build_application_container(
+        app_id="",
+        user=user,
+        nickname=nickname_str,
+        static_id=static_id_str,
+        method=method_str,
+        rank=rank_str,
+        status_text="Ожидает рассмотрения",
+        docs=docs,
+        action_row=action_row
+    )
+    app_message = await review_channel.send(components=[container])
+
+    app_id = add_application(
+        user_id=user.id,
+        user_name=str(user),
+        nickname=nickname_str,
+        static_id=static_id_str,
+        rank=rank_str,
+        method=method_str,
+        message_id=app_message.id,
+        docs=docs,
+    )
+
+    container_with_id = build_application_container(
+        app_id=app_id,
+        user=user,
+        nickname=nickname_str,
+        static_id=static_id_str,
+        method=method_str,
+        rank=rank_str,
+        status_text="Ожидает рассмотрения",
+        docs=docs,
+        action_row=action_row
+    )
+    await app_message.edit(components=[container_with_id])
+
+    logger.info(
+        "НОВАЯ ЗАЯВКА | Номер: #%s | Пользователь: %s (ID: %s) | Ник: %s | Static ID: %s | Звание: %s | Способ: %s",
+        app_id, user, user.id, nickname_str, static_id_str, rank_str, method_str
+    )
+
+    await interaction.followup.send(
+        components=[v2_msg(f"Заявка отправлена. Номер: #{app_id}")],
+        ephemeral=True,
+    )
 
 
 class ResignationModal(disnake.ui.Modal):
