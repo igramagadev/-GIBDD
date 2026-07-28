@@ -120,6 +120,27 @@ class Settings:
     battalion_assignment_channel_id: int = field(
         default_factory=lambda: _int_env("BATTALION_ASSIGNMENT_CHANNEL_ID", 0)
     )
+    blacklist_channel_id: int = field(
+        default_factory=lambda: _int_env("BLACKLIST_CHANNEL_ID", 0)
+    )
+    blacklist_ping_roles: list[int] = field(
+        default_factory=lambda: _int_list_env("BLACKLIST_PING_ROLES", [])
+    )
+    staff_requests_channel_id: int = field(
+        default_factory=lambda: _int_env("STAFF_REQUESTS_CHANNEL_ID", 0)
+    )
+    roster_channel_id: int = field(
+        default_factory=lambda: _int_env("ROSTER_CHANNEL_ID", 0)
+    )
+
+    leader_id: int = field(default_factory=lambda: _int_env("LEADER_ID", 0))
+
+    cmdr_1_role_id: int = field(default_factory=lambda: _int_env("CMDR_1_ROLE_ID", 0))
+    cmdr_2_role_id: int = field(default_factory=lambda: _int_env("CMDR_2_ROLE_ID", 0))
+    cmdr_3_role_id: int = field(default_factory=lambda: _int_env("CMDR_3_ROLE_ID", 0))
+    dep_cmdr_1_role_id: int = field(default_factory=lambda: _int_env("DEP_CMDR_1_ROLE_ID", 0))
+    dep_cmdr_2_role_id: int = field(default_factory=lambda: _int_env("DEP_CMDR_2_ROLE_ID", 0))
+    dep_cmdr_3_role_id: int = field(default_factory=lambda: _int_env("DEP_CMDR_3_ROLE_ID", 0))
 
     ss_role_id: int = field(default_factory=lambda: _int_env("SS_ROLE_ID", 0))
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))
@@ -193,7 +214,7 @@ class Settings:
         if self.cadet_role_id == 0:
             warnings.append("CADET_ROLE_ID не задан")
         if self.ss_role_id == 0:
-            warnings.append("SS_ROLE_ID не задан — is_ss() всегда False")
+            warnings.append("SS_ROLE_ID не задан")
         return warnings
 
 settings = Settings()

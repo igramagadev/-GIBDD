@@ -1,12 +1,7 @@
 import logging
-
 import disnake
-
 from views.persistent_panels import PANEL_LAYOUTS
-
 logger = logging.getLogger("bot.panels")
-
-
 async def send_v2_panel(
     bot: disnake.Client,
     channel_id: int,
@@ -18,20 +13,17 @@ async def send_v2_panel(
     if not layout_cls:
         logger.error("Неизвестный ключ панели: %s", panel_key)
         return False
-
     for guild in bot.guilds:
         channel = guild.get_channel(channel_id)
         if not channel:
             logger.warning("[%s] Канал %s не найден на сервере %s", panel_key, channel_id, guild.name)
             continue
-
         panel_custom_ids = {
             "application": "panel:application:submit",
             "resignation": "panel:resignation:submit",
             "audit": "panel:audit:open",
         }
         target_custom_id = panel_custom_ids.get(panel_key, "")
-
         deleted = 0
         async for message in channel.history(limit=history_limit):
             if message.author.id != bot.user.id:
@@ -51,7 +43,6 @@ async def send_v2_panel(
                         except Exception:
                             pass
                 return False
-
             is_old_panel = _find_custom_id(message.components, target_custom_id)
             if is_old_panel:
                 try:
@@ -59,10 +50,8 @@ async def send_v2_panel(
                     deleted += 1
                 except disnake.HTTPException as exc:
                     logger.warning("[%s] Не удалось удалить сообщение %s: %s", panel_key, message.id, exc)
-
         try:
             view = layout_cls()
-
             if panel_key == "application":
                 desc_display = disnake.ui.TextDisplay(
                     "# Электронная приемная УГИБДД\n\n"
@@ -100,18 +89,15 @@ async def send_v2_panel(
             else:
                 logger.error("Неизвестный ключ панели в блоке генерации: %s", panel_key)
                 return False
-
             action_row = disnake.ui.ActionRow(*view.children)
             container = disnake.ui.Container(
                 desc_display,
                 action_row,
                 accent_colour=disnake.Colour(0x2C2F33)
             )
-
             await channel.send(components=[container])
             logger.info("[%s] Панель создана в #%s (удалено старых: %d)", panel_key, channel.name, deleted)
         except disnake.HTTPException as exc:
             logger.error("[%s] Ошибка создания панели: %s", panel_key, exc)
             return False
-
     return True

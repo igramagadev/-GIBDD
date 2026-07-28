@@ -1,10 +1,8 @@
 import logging
 import time
 from datetime import datetime
-
 import disnake
 from disnake.ext import commands
-
 from config.settings import settings
 from database import (
     add_audit_record,
@@ -24,18 +22,13 @@ from utils.helpers import (
     is_rank_sergeant_or_above,
 )
 from utils.panel_init import send_v2_panel
-
 logger = logging.getLogger("bot.audit")
-
 AUDIT_SESSIONS: dict[int, dict] = {}
 _AUDIT_SESSION_TTL = 600
-
 def _set_audit_session(user_id: int, data: dict) -> None:
     _cleanup_audit_sessions()
     data["_ts"] = time.monotonic()
     AUDIT_SESSIONS[user_id] = data
-
-
 def _get_audit_session(user_id: int) -> dict | None:
     session = AUDIT_SESSIONS.get(user_id)
     if not session:
@@ -44,8 +37,6 @@ def _get_audit_session(user_id: int) -> dict | None:
         AUDIT_SESSIONS.pop(user_id, None)
         return None
     return session
-
-
 def _cleanup_audit_sessions() -> None:
     now = time.monotonic()
     expired = [
@@ -54,8 +45,6 @@ def _cleanup_audit_sessions() -> None:
     ]
     for uid in expired:
         del AUDIT_SESSIONS[uid]
-
-
 async def post_audit_container(guild, container):
     channel = guild.get_channel(settings.audit_log_channel_id)
     if not channel:
@@ -67,8 +56,6 @@ async def post_audit_container(guild, container):
     except disnake.HTTPException as exc:
         logger.error("Ошибка отправки контейнера аудита: %s", exc)
         return False
-
-
 def build_audit_container(action_verb, performer, target, static_id,
                           old_rank=None, new_rank=None, reason=None,
                           issued_roles=None, removed_roles=None,
@@ -81,74 +68,55 @@ def build_audit_container(action_verb, performer, target, static_id,
         "переводит": "Перевод по отделам",
     }
     action_title = action_title_map.get(action_verb.lower(), "Действие кадрового аудита")
-
     desc = f"### Журнал — {action_title}\n"
     desc += "*Единая запись кадрового аудита*\n\n"
-
     lines = []
     lines.append(f"**Действие**: {action_title}")
     lines.append(f"**Исполнитель**: {performer.mention} ({performer.id})")
-    
     target_val = f"{target.mention} ({target.id})"
     if static_id:
         target_val += f" | Static ID: `{static_id}`"
     lines.append(f"**Сотрудник**: {target_val}")
-
     if old_rank and new_rank:
         lines.append(f"**Было**: {old_rank}")
         lines.append(f"**Стало**: {new_rank}")
     elif new_rank:
         lines.append(f"**Звание**: {new_rank}")
-
     if old_department and new_department:
         lines.append(f"**Из отдела**: {old_department}")
         lines.append(f"**В отдел**: {new_department}")
-
     if removed_roles:
         lines.append(f"**Снятые роли**: {removed_roles}")
     if issued_roles:
         lines.append(f"**Выданные роли**: {issued_roles}")
-
     if reason:
         lines.append(f"**Причина/Рапорт**: {reason}")
-
     desc += "\n".join(f"> {line}" for line in lines)
-
     timestamp = int(datetime.now().timestamp())
     footer_text = f"Время: <t:{timestamp}:F> (<t:{timestamp}:R>)"
-
     return disnake.ui.Container(
         disnake.ui.TextDisplay(desc),
         disnake.ui.Separator(),
         disnake.ui.TextDisplay(footer_text),
         accent_colour=disnake.Colour(0x2C2F33)
     )
-
-
 class AuditAcceptUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.user_select(placeholder="Выберите пользователя...", custom_id="audit:select_user_accept")
     async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
         target = select.values[0]
-
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
             return
-
         if interaction.user.id == target.id:
             await interaction.response.send_message(components=[v2_msg("Нельзя принимать самого себя.")], ephemeral=True)
             return
-
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Accept"
         })
-
         await interaction.response.send_modal(AuditAcceptModal())
-
-
 class AuditAcceptModal(disnake.ui.Modal):
     def __init__(self):
         components = [
@@ -180,7 +148,6 @@ class AuditAcceptModal(disnake.ui.Modal):
             )
         ]
         super().__init__(title="Принятие сотрудника", components=components)
-
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
         performer = interaction.user
@@ -189,26 +156,21 @@ class AuditAcceptModal(disnake.ui.Modal):
         method_val = interaction.text_values["method"].strip()
         rank_val = interaction.text_values["rank"].strip()
         reason_val = interaction.text_values.get("reason", "").strip()
-
         session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
             return
-
         target_id = session["target_id"]
-
         target = guild.get_member(target_id)
         if not target:
             await interaction.followup.send(components=[v2_msg("Сотрудник не найден.")], ephemeral=True)
             return
-
         if is_blacklisted(target_id):
             await interaction.followup.send(
                 components=[v2_msg("Пользователь в Чёрном Списке (ЧС)! Принятие заблокировано.")],
                 ephemeral=True
             )
             return
-
         user_db = get_user(target_id)
         if user_db and user_db["status"] == "active":
             await interaction.followup.send(
@@ -216,11 +178,9 @@ class AuditAcceptModal(disnake.ui.Modal):
                 ephemeral=True
             )
             return
-
         bot_member = guild.get_member(interaction.client.user.id)
         from utils.helpers import sync_user_roles_and_nickname
         issued_roles, removed_roles, errors = await sync_user_roles_and_nickname(target, guild, rank_val, bot_member)
-
         add_audit_record(
             action="Принять",
             target_user_id=target.id,
@@ -235,13 +195,10 @@ class AuditAcceptModal(disnake.ui.Modal):
             issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
             removed_roles="Нет"
         )
-
         add_or_update_user(target.id, target.display_name, static_id_val, rank_val, "active")
-
         audit_reason = method_val
         if reason_val:
             audit_reason += f" ({reason_val})"
-
         await post_audit_container(
             guild,
             build_audit_container(
@@ -250,7 +207,6 @@ class AuditAcceptModal(disnake.ui.Modal):
                 issued_roles=", ".join(issued_roles) if issued_roles else None
             )
         )
-
         staff_title = get_staff_title(performer, guild)
         desc_dm = (
             f"### Уведомление о принятии на службу\n\n"
@@ -265,7 +221,9 @@ class AuditAcceptModal(disnake.ui.Modal):
             accent_colour=disnake.Colour(0x2C2F33)
         )
         dm_status = "ЛС отправлены" if await send_dm(target, components=[dm_container]) else "ЛС закрыты"
-
+        import asyncio
+        from utils.roster_generator import update_cpps_roster
+        asyncio.create_task(update_cpps_roster(guild))
         response = f"{target.mention} принят!"
         if issued_roles:
             response += f"\nРоли: {', '.join(issued_roles)}"
@@ -273,30 +231,23 @@ class AuditAcceptModal(disnake.ui.Modal):
             response += f"\nОшибки: {', '.join(errors)}"
         response += f"\n{dm_status}"
         await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
-
-
 class AuditDismissUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.user_select(placeholder="Выберите сотрудника...", custom_id="audit:select_user_dismiss")
     async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
         target = select.values[0]
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
             return
-
         if interaction.user.id == target.id:
             await interaction.response.send_message(components=[v2_msg("Нельзя уволить самого себя.")], ephemeral=True)
             return
-
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Dismiss"
         })
         await interaction.response.send_modal(AuditDismissReasonModal())
-
-
 class AuditDismissReasonModal(disnake.ui.Modal):
     def __init__(self, needs_static: bool = False):
         components = []
@@ -316,26 +267,21 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             style=disnake.TextInputStyle.paragraph
         ))
         super().__init__(title="Увольнение сотрудника", components=components)
-
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
         performer = interaction.user
         guild = interaction.guild
         reason_val = interaction.text_values["reason"].strip()
-
         session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
             return
-
         target_id = session["target_id"]
         target = guild.get_member(target_id)
         if not target:
             await interaction.followup.send(components=[v2_msg("Сотрудник не найден.")], ephemeral=True)
             return
-
         user_db = get_user(target_id)
-        
         static_id_input = interaction.text_values.get("static_id")
         if static_id_input and user_db:
             static_id = static_id_input.strip()
@@ -343,11 +289,9 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             session["static_id"] = static_id
         else:
             static_id = user_db["static_id"] if user_db else "Не указан"
-
         bot_member = guild.get_member(interaction.client.user.id)
         errors = []
         removed_roles_list = []
-
         cleanup_ids = settings.roles_to_cleanup_ids
         cleanup_names = settings.roles_to_cleanup_names
         extra_cleanup_ids = set()
@@ -356,7 +300,6 @@ class AuditDismissReasonModal(disnake.ui.Modal):
         if settings.divider_rank_id: extra_cleanup_ids.add(settings.divider_rank_id)
         if settings.divider_access_id: extra_cleanup_ids.add(settings.divider_access_id)
         extra_cleanup_ids.update(settings.department_role_ids.values())
-        
         for role in target.roles:
             is_cleanup = False
             if cleanup_ids and role.id in cleanup_ids:
@@ -367,17 +310,14 @@ class AuditDismissReasonModal(disnake.ui.Modal):
                 is_cleanup = True
             elif role.id in (settings.base_role_id, settings.cadet_role_id):
                 is_cleanup = True
-            
             if role.id in settings.ranks_map.values():
                 is_cleanup = True
-
             if is_cleanup and can_manage_role(bot_member, role):
                 try:
                     await target.remove_roles(role)
                     removed_roles_list.append(clean_role_name(role.name))
                 except Exception as exc:
                     errors.append(f"{role.name}: {exc}")
-
         fired_role = guild.get_role(settings.fired_role_id)
         issued_roles_list = []
         if fired_role and fired_role not in target.roles and can_manage_role(bot_member, fired_role):
@@ -386,7 +326,6 @@ class AuditDismissReasonModal(disnake.ui.Modal):
                 issued_roles_list.append(clean_role_name(fired_role.name))
             except Exception as exc:
                 errors.append(f"Уволен: {exc}")
-                
         if user_db and user_db["nickname"] and user_db["nickname"] not in ("Не указан", ""):
             base_name = user_db["nickname"]
         else:
@@ -401,7 +340,6 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             await target.edit(nick=fired_nick)
         except Exception as exc:
             errors.append(f"Ошибка изменения ника: {exc}")
-
         add_audit_record(
             action="Уволить",
             target_user_id=target.id,
@@ -416,9 +354,7 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             issued_roles=", ".join(issued_roles_list) if issued_roles_list else "Нет",
             removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет"
         )
-
         set_user_status(target.id, "fired")
-
         await post_audit_container(
             guild,
             build_audit_container(
@@ -427,7 +363,6 @@ class AuditDismissReasonModal(disnake.ui.Modal):
                 removed_roles=", ".join(removed_roles_list) if removed_roles_list else None
             )
         )
-
         staff_title = get_staff_title(performer, guild)
         desc_dm = (
             f"### Уведомление об увольнении\n\n"
@@ -439,7 +374,9 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             accent_colour=disnake.Colour(0x2C2F33)
         )
         dm_status = "ЛС отправлены" if await send_dm(target, components=[dm_container]) else "ЛС закрыты"
-
+        import asyncio
+        from utils.roster_generator import update_cpps_roster
+        asyncio.create_task(update_cpps_roster(guild))
         response = f"{target.mention} уволен!\n"
         if removed_roles_list:
             response += f"Снято: {', '.join(removed_roles_list)}\n"
@@ -450,9 +387,28 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             components=[v2_msg(response)],
             ephemeral=True
         )
-
-
-class AuditPromoteDemoteModal(disnake.ui.Modal):
+class AuditSelectRankView(disnake.ui.View):
+    def __init__(self, action: str, valid_ranks: list[str], needs_static: bool):
+        super().__init__(timeout=None)
+        self.action = action
+        self.needs_static = needs_static
+        options = [disnake.SelectOption(label=rank, value=rank) for rank in valid_ranks]
+        self.select_rank = disnake.ui.StringSelect(
+            placeholder="Выберите звание...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"audit:select_rank_{action}"
+        )
+        self.select_rank.callback = self.rank_callback
+        self.add_item(self.select_rank)
+    async def rank_callback(self, interaction: disnake.MessageInteraction):
+        new_rank = self.select_rank.values[0]
+        session = _get_audit_session(interaction.user.id)
+        if session:
+            session["new_rank"] = new_rank
+        await interaction.response.send_modal(AuditPromoteDemoteReasonModal(self.action, self.needs_static))
+class AuditPromoteDemoteReasonModal(disnake.ui.Modal):
     def __init__(self, action: str, needs_static: bool = False):
         self.action = action
         title = "Повышение" if action == "Promote" else "Понижение"
@@ -461,17 +417,10 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             components.append(disnake.ui.TextInput(
                 label="Static ID",
                 custom_id="static_id",
-                placeholder="Например: 123456",
+                placeholder="Пример: 123456",
                 required=True,
                 max_length=20
             ))
-        components.append(disnake.ui.TextInput(
-            label="Новое звание",
-            custom_id="new_rank",
-            placeholder="Например: Сержант",
-            required=True,
-            max_length=50
-        ))
         components.append(disnake.ui.TextInput(
             label="Причина / Рапорт",
             custom_id="reason",
@@ -480,14 +429,11 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             style=disnake.TextInputStyle.paragraph
         ))
         super().__init__(title=title, components=components)
-
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
         performer = interaction.user
         guild = interaction.guild
-        new_rank = interaction.text_values["new_rank"].strip()
         reason_val = interaction.text_values["reason"].strip()
-
         session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(
@@ -495,32 +441,26 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
                 ephemeral=True
             )
             return
-
         target_id = session["target_id"]
-        
+        new_rank = session.get("new_rank", "")
         static_id_input = interaction.text_values.get("static_id")
         if static_id_input:
             session["static_id"] = static_id_input.strip()
             user_db = get_user(target_id)
             if user_db:
                 add_or_update_user(target_id, user_db["nickname"], session["static_id"], user_db["rank"], user_db["status"])
-                
         action = session["action"]
         static_id = session["static_id"]
         old_rank = session["old_rank"]
-
         target = guild.get_member(target_id)
         if not target:
             await interaction.followup.send(components=[v2_msg("Сотрудник не найден.")], ephemeral=True)
             return
-
         bot_member = guild.get_member(interaction.client.user.id)
         from utils.helpers import sync_user_roles_and_nickname
         issued_roles, removed_roles_list, errors = await sync_user_roles_and_nickname(target, guild, new_rank, bot_member)
-
         action_verb = "повышает" if action == "Promote" else "понижает"
         audit_action = "Повысить" if action == "Promote" else "Понизить"
-
         add_audit_record(
             action=audit_action,
             target_user_id=target.id,
@@ -535,11 +475,9 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
             removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
         )
-
         user_db = get_user(target.id)
         if user_db:
             add_or_update_user(target.id, user_db["nickname"], user_db["static_id"], new_rank, "active")
-
         await post_audit_container(
             guild,
             build_audit_container(
@@ -549,13 +487,14 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
                 removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
             ),
         )
-
         logger.info(
             "КАДРОВЫЙ АУДИТ | %s | Сотрудник: %s (ID: %s) | Static ID: %s | С %s на %s | Причина: %s | Снял: %s | Выдал: %s | Выполнил: %s (ID: %s)",
             audit_action.upper(), target, target.id, static_id, old_rank, new_rank, reason_val,
             ", ".join(removed_roles_list), ", ".join(issued_roles), performer, performer.id
         )
-
+        import asyncio
+        from utils.roster_generator import update_cpps_roster
+        asyncio.create_task(update_cpps_roster(guild))
         staff_title = get_staff_title(performer, guild)
         action_word = "повышен" if action == "Promote" else "понижен"
         desc_dm = (
@@ -570,7 +509,6 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
             accent_colour=disnake.Colour(0x2C2F33)
         )
         await send_dm(target, components=[dm_container])
-
         if action == "Promote" and new_rank.lower().strip() in ("сержант", "сержант полиции"):
             assigned_dept = None
             from config.settings import settings
@@ -580,17 +518,14 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
                     if r in target.roles or r.name in issued_roles:
                         assigned_dept = dept_name
                         break
-
             if assigned_dept and "батальон" in assigned_dept.lower():
-                com_1, dep_1 = 1442948864020709478, 1006102142395887677
-                com_2, dep_2 = 1040387515263234100, 1385228673975844976
-                com_3, dep_3 = 1358696068694413443, 442335720661843968
-                
+                com_1, dep_1 = settings.cmdr_1_role_id, settings.dep_cmdr_1_role_id
+                com_2, dep_2 = settings.cmdr_2_role_id, settings.dep_cmdr_2_role_id
+                com_3, dep_3 = settings.cmdr_3_role_id, settings.dep_cmdr_3_role_id
                 pings = ""
-                if "1-й" in assigned_dept: pings = f"<@{com_1}> <@{dep_1}>"
-                elif "2-й" in assigned_dept: pings = f"<@{com_2}> <@{dep_2}>"
-                elif "3-й" in assigned_dept: pings = f"<@{com_3}> <@{dep_3}>"
-
+                if "1-й" in assigned_dept: pings = f"<@&{com_1}> <@&{dep_1}>"
+                elif "2-й" in assigned_dept: pings = f"<@&{com_2}> <@&{dep_2}>"
+                elif "3-й" in assigned_dept: pings = f"<@&{com_3}> <@&{dep_3}>"
                 if pings:
                     embed = disnake.Embed(
                         title="Зачисление в батальон",
@@ -607,33 +542,26 @@ class AuditPromoteDemoteModal(disnake.ui.Modal):
                                 await ch.send(content=pings, embed=embed)
                     except Exception as e:
                         logger.error(f"Не удалось отправить уведомление о зачислении: {e}")
-
         response = f"{target.mention}: {old_rank} → {new_rank}"
         if errors:
             response += f"\nОшибки: {', '.join(errors)}"
         await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
-
-
 class AuditDemoteUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.user_select(placeholder="Выберите сотрудника...", custom_id="audit:select_user_demote")
     async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
         target = select.values[0]
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
             return
-
         if interaction.user.id == target.id:
             await interaction.response.send_message(components=[v2_msg("Нельзя понижать самого себя.")], ephemeral=True)
             return
-
         user_db = get_user(target.id)
         if not user_db:
             await interaction.response.send_message(components=[v2_msg("Пользователь не найден в базе данных.")], ephemeral=True)
             return
-
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Demote",
@@ -641,45 +569,45 @@ class AuditDemoteUserSelectView(disnake.ui.View):
             "static_id": user_db["static_id"]
         })
         needs_static = user_db.get("static_id") in ("Не указан", None, "")
-        await interaction.response.send_modal(AuditPromoteDemoteModal("Demote", needs_static=needs_static))
-
-
+        current_rank = user_db.get("rank", "").strip()
+        idx = -1
+        if current_rank in settings.ranks:
+            idx = settings.ranks.index(current_rank)
+        if idx <= 0:
+            await interaction.response.send_message(components=[v2_msg(f"Невозможно понизить сотрудника со званием '{current_rank}'.")], ephemeral=True)
+            return
+        valid_ranks = settings.ranks[:idx]
+        await interaction.response.send_message(
+            content="Выберите звание для понижения:",
+            view=AuditSelectRankView("Demote", valid_ranks, needs_static),
+            ephemeral=True
+        )
 class AuditPromoteUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.user_select(placeholder="Выберите сотрудника...", custom_id="audit:select_user_promote")
     async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
         target = select.values[0]
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
             return
-
         if interaction.user.id == target.id:
             await interaction.response.send_message(components=[v2_msg("Нельзя повышать самого себя.")], ephemeral=True)
             return
-
         user_db = get_user(target.id)
         if not user_db:
             await interaction.response.send_message(components=[v2_msg("Пользователь не найден в базе данных.")], ephemeral=True)
             return
-
         from database import get_last_promotion_time
         from datetime import datetime, timezone, timedelta
-        
         current_rank_lower = user_db["rank"].strip().lower() if user_db.get("rank") else ""
-        
         last_promo = get_last_promotion_time(target.id)
         if last_promo and current_rank_lower != "рядовой":
             msk_tz = timezone(timedelta(hours=3))
-            
-            # last_promo comes from DB as UTC naive datetime
             last_promo_utc = last_promo.replace(tzinfo=timezone.utc)
             last_promo_msk = last_promo_utc.astimezone(msk_tz)
-            
             now_msk = datetime.now(timezone.utc).astimezone(msk_tz)
             next_midnight_msk = (last_promo_msk + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            
             if now_msk < next_midnight_msk:
                 diff = next_midnight_msk - now_msk
                 hours = int(diff.total_seconds() // 3600)
@@ -689,7 +617,6 @@ class AuditPromoteUserSelectView(disnake.ui.View):
                     ephemeral=True
                 )
                 return
-
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Promote",
@@ -697,33 +624,59 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             "static_id": user_db["static_id"]
         })
         needs_static = user_db.get("static_id") in ("Не указан", None, "")
-        await interaction.response.send_modal(AuditPromoteDemoteModal("Promote", needs_static=needs_static))
-
-
+        current_rank = user_db.get("rank", "").strip()
+        target_idx = -1
+        if current_rank in settings.ranks:
+            target_idx = settings.ranks.index(current_rank)
+        performer_rank_idx = -1
+        for role in interaction.user.roles:
+            if role.name in settings.ranks:
+                r_idx = settings.ranks.index(role.name)
+                if r_idx > performer_rank_idx:
+                    performer_rank_idx = r_idx
+        if performer_rank_idx == -1:
+            perf_db = get_user(interaction.user.id)
+            if perf_db and perf_db.get("rank") in settings.ranks:
+                performer_rank_idx = settings.ranks.index(perf_db["rank"])
+        if performer_rank_idx == -1:
+            performer_rank_idx = len(settings.ranks) - 1
+        if target_idx >= performer_rank_idx:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Вы не можете повысить сотрудника, так как его звание ({current_rank}) выше или равно вашему.")],
+                ephemeral=True
+            )
+            return
+        valid_ranks = settings.ranks[target_idx+1:performer_rank_idx+1]
+        if not valid_ranks:
+            await interaction.response.send_message(
+                components=[v2_msg("Нет доступных званий для повышения.")],
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            content="Выберите звание для повышения:",
+            view=AuditSelectRankView("Promote", valid_ranks, needs_static),
+            ephemeral=True
+        )
 class AuditTransferUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.user_select(placeholder="Выберите сотрудника...", custom_id="audit:select_user_transfer")
     async def select_user(self, select: disnake.ui.UserSelect, interaction: disnake.MessageInteraction):
         await interaction.response.defer(ephemeral=True)
         target = select.values[0]
         guild = interaction.guild
-
         if not can_manage_audit(interaction.user):
             await interaction.followup.send(components=[v2_msg("Недостаточно прав. ")], ephemeral=True)
             return
-
         if interaction.user.id == target.id:
             await interaction.followup.send(components=[v2_msg("Нельзя переводить самого себя.")], ephemeral=True)
             return
-
         if not isinstance(target, disnake.Member):
             target = guild.get_member(target.id)
             if not target:
                 await interaction.followup.send(components=[v2_msg("Пользователь не найден на сервере.")], ephemeral=True)
                 return
-
         dept_ids = settings.department_role_ids
         current_dept = "Нет"
         for dept_name, role_id in dept_ids.items():
@@ -731,14 +684,11 @@ class AuditTransferUserSelectView(disnake.ui.View):
             if role and role in target.roles:
                 current_dept = dept_name
                 break
-
         app = get_user(target.id)
         if not app:
             await interaction.followup.send(components=[v2_msg("Пользователь не найден в БД.")], ephemeral=True)
             return
-            
         static_id = app["static_id"]
-
         _set_audit_session(interaction.user.id, {
             "target_id": target.id,
             "action": "Transfer",
@@ -746,18 +696,15 @@ class AuditTransferUserSelectView(disnake.ui.View):
             "old_department": current_dept,
             "old_rank": app["rank"]
         })
-
         options = []
         for dept_name in dept_ids:
             options.append(disnake.SelectOption(label=dept_name, value=dept_name))
-
         if not options:
             await interaction.followup.send(
                 components=[v2_msg("Нет доступных отделов для перевода.")],
                 ephemeral=True
             )
             return
-
         select_menu = disnake.ui.Select(
             placeholder="Выберите новый отдел...",
             options=options,
@@ -765,13 +712,11 @@ class AuditTransferUserSelectView(disnake.ui.View):
         )
         view = disnake.ui.View(timeout=None)
         view.add_item(select_menu)
-        
         async def _dept_callback(inter: disnake.MessageInteraction):
             session = _get_audit_session(inter.user.id)
             if not session:
                 await inter.response.send_message(components=[v2_msg("Сессия истекла.")], ephemeral=True)
                 return
-            
             selected_dept = inter.values[0]
             if selected_dept == session["old_department"]:
                 await inter.response.send_message(
@@ -779,15 +724,11 @@ class AuditTransferUserSelectView(disnake.ui.View):
                     ephemeral=True
                 )
                 return
-                
             session["new_department"] = selected_dept
             needs_static = session.get("static_id") in ("Не указан", None, "")
             await inter.response.send_modal(AuditTransferReasonModal(needs_static=needs_static))
-            
         select_menu.callback = _dept_callback
-        
         action_row = disnake.ui.ActionRow(select_menu)
-
         container = disnake.ui.Container(
             disnake.ui.TextDisplay(
                 f"Сотрудник: {target.mention}\n"
@@ -799,7 +740,6 @@ class AuditTransferUserSelectView(disnake.ui.View):
             accent_colour=disnake.Colour(0x2C2F33)
         )
         await interaction.followup.send(components=[container], ephemeral=True)
-
 class AuditTransferReasonModal(disnake.ui.Modal):
     def __init__(self, needs_static: bool = False):
         components = []
@@ -819,41 +759,33 @@ class AuditTransferReasonModal(disnake.ui.Modal):
             style=disnake.TextInputStyle.paragraph
         ))
         super().__init__(title="Перевод сотрудника", components=components)
-
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
         performer = interaction.user
         guild = interaction.guild
         reason_val = interaction.text_values["reason"].strip()
-
         session = _get_audit_session(performer.id)
         if not session:
             await interaction.followup.send(components=[v2_msg("Сессия истекла.")], ephemeral=True)
             return
-
         target_id = session["target_id"]
-        
         static_id_input = interaction.text_values.get("static_id")
         if static_id_input:
             session["static_id"] = static_id_input.strip()
             user_db = get_user(target_id)
             if user_db:
                 add_or_update_user(target_id, user_db["nickname"], session["static_id"], user_db["rank"], user_db["status"])
-                
         static_id = session["static_id"]
         old_dept = session["old_department"]
         new_dept = session["new_department"]
         old_rank = session["old_rank"]
-
         target = guild.get_member(target_id)
         if not target:
             await interaction.followup.send(components=[v2_msg("Сотрудник не найден.")], ephemeral=True)
             return
-
         bot_member = guild.get_member(interaction.client.user.id)
         from utils.helpers import sync_user_roles_and_nickname
         issued_roles, removed_roles_list, errors = await sync_user_roles_and_nickname(target, guild, old_rank, bot_member, override_dept=new_dept)
-
         add_audit_record(
             action="Перевод",
             target_user_id=target.id,
@@ -868,7 +800,6 @@ class AuditTransferReasonModal(disnake.ui.Modal):
             issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
             removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
         )
-
         await post_audit_container(
             guild,
             build_audit_container(
@@ -879,7 +810,6 @@ class AuditTransferReasonModal(disnake.ui.Modal):
                 removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
             )
         )
-
         staff_title = get_staff_title(performer, guild)
         desc_dm = (
             f"### Уведомление о переводе\n\n"
@@ -893,22 +823,17 @@ class AuditTransferReasonModal(disnake.ui.Modal):
             accent_colour=disnake.Colour(0x2C2F33)
         )
         await send_dm(target, components=[dm_container])
-
         logger.info(
             "ПЕРЕВОД | Сотрудник: %s (ID: %s) | Static ID: %s | Из: %s | В: %s | Причина: %s | Выполнил: %s (ID: %s)",
             target, target.id, static_id, old_dept, new_dept, reason_val, performer, performer.id
         )
-
         response = f"{target.mention}: {old_dept} → {new_dept}"
         if errors:
             response += f"\nОшибки: {', '.join(errors)}"
         await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
-
-
 class AuditActionView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     @disnake.ui.select(
         placeholder="Выберите действие кадрового аудита...",
         options=[
@@ -925,7 +850,6 @@ class AuditActionView(disnake.ui.View):
         selected_value = select.values[0]
         view = None
         text = ""
-
         if selected_value == "Accept":
             view = AuditAcceptUserSelectView()
             text = "Выберите пользователя для принятия на службу:"
@@ -941,7 +865,6 @@ class AuditActionView(disnake.ui.View):
         elif selected_value == "Transfer":
             view = AuditTransferUserSelectView()
             text = "Выберите сотрудника для перевода:"
-
         if view and text:
             user_select_row = disnake.ui.ActionRow(*view.children)
             container = disnake.ui.Container(
@@ -954,10 +877,8 @@ class AuditActionView(disnake.ui.View):
 class AuditCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
     async def init_panel(self):
         await send_v2_panel(self.bot, settings.audit_panel_channel_id, "audit")
-
     @commands.Cog.listener()
     async def on_message_interaction(self, interaction: disnake.MessageInteraction):
         if interaction.data.custom_id != "audit_select_department_persistent":
@@ -976,7 +897,5 @@ class AuditCog(commands.Cog):
         session["new_department"] = selected_dept
         needs_static = session.get("static_id") in ("Не указан", None, "")
         await interaction.response.send_modal(AuditTransferReasonModal(needs_static=needs_static))
-
-
 def setup(bot):
     bot.add_cog(AuditCog(bot))

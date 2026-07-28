@@ -132,6 +132,40 @@ class AuditPanelActions(ui.View):
             ephemeral=True,
         )
 
+    @ui.button(
+        label="Подать рапорт командира",
+        style=disnake.ButtonStyle.secondary,
+        custom_id="panel:audit:report",
+    )
+    async def report_button(self, button: ui.Button, interaction: disnake.MessageInteraction) -> None:
+        from cogs.staff_requests import can_submit_request, StaffRequestUserSelectView
+        
+        if not can_submit_request(interaction.user):
+            await interaction.response.send_message(
+                components=[v2_msg("У вас нет прав подавать рапорты командира (доступно от Старшины).")], 
+                ephemeral=True
+            )
+            return
+            
+        remaining = interaction_guard.check_cooldown(
+            interaction.user.id, "panel:report", settings.button_cooldown_seconds
+        )
+        if remaining is not None:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Подождите {remaining:.1f} сек. перед повторным нажатием.")],
+                ephemeral=True,
+            )
+            return
+            
+        view = StaffRequestUserSelectView()
+        action_row = disnake.ui.ActionRow(*view.children)
+        container = disnake.ui.Container(
+            disnake.ui.TextDisplay("Выберите сотрудника для рапорта"),
+            action_row,
+            accent_colour=disnake.Colour(0x2C2F33)
+        )
+        await interaction.response.send_message(components=[container], ephemeral=True)
+
 
 PERSISTENT_VIEWS = (
     ApplicationPanelActions,

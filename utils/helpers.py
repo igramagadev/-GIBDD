@@ -424,7 +424,8 @@ STANDARD_PREFIXES = {
     "Стажёр 3БП", "Стаж.3БП",
     "Курсант 1К", "К.1К",
     "Курсант 2К", "К.2К",
-    "Уволен"
+    "Уволен",
+    "Гражданин"
 }
 
 async def sync_user_roles_and_nickname(target: disnake.Member, guild: disnake.Guild, rank: str, bot_member: disnake.Member, override_dept: str = None, nickname_override: str = None) -> tuple[list[str], list[str], list[str]]:

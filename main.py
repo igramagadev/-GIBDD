@@ -15,6 +15,7 @@ logger = logging.getLogger("bot")
 COGS = (
     "cogs.applications",
     "cogs.audit",
+    "cogs.staff_requests",
 )
 
 
