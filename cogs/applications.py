@@ -71,12 +71,9 @@ def build_application_container(
         f"**Способ подачи:**\n```\n{method}\n```\n"
         f"**Звание:**\n```\n{rank}\n```"
     )
-    if docs and not validate_docs_url(docs):
+    if docs:
         fields_text += f"\n\n**Ссылка на документы:**\n{docs}"
     components.append(disnake.ui.TextDisplay(fields_text))
-    if docs and validate_docs_url(docs):
-        components.append(disnake.ui.Separator())
-        components.append(disnake.ui.MediaGallery(disnake.ui.MediaGalleryItem(media=docs)))
     components.append(disnake.ui.Separator())
     components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
     if action_row:
@@ -866,40 +863,51 @@ class ResignationActionView(disnake.ui.View):
         super().__init__(timeout=None)
     @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="approve_resignation")
     async def approve_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        await interaction.response.defer(ephemeral=True)
-        async with interaction_guard.lock(interaction.message.id) as acquired:
-            if not acquired:
-                await interaction.followup.send(
-                    components=[v2_msg("Это заявление уже обрабатывает другой модератор.")],
-                    ephemeral=True,
-                )
-                return
-            guild = interaction.guild
-            member = interaction.user
-            if not can_manage_resignations(member):
-                await interaction.followup.send(
-                    components=[v2_msg("Недостаточно прав. ")],
-                    ephemeral=True
-                )
-                return
-            app = get_application_by_message_id(interaction.message.id)
-            if not app:
-                await interaction.followup.send(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
-                return
-            app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = app
-            if status != "pending":
-                await interaction.followup.send(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
-                return
-            if member.id == user_id:
-                await interaction.followup.send(components=[v2_msg("Нельзя одобрять своё собственное заявление.")], ephemeral=True)
-                return
-            target = guild.get_member(user_id)
             if not target:
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     components=[v2_msg(f"Пользователь с ID {user_id} покинул сервер.")],
                     ephemeral=True,
                 )
                 return
+            
+            await interaction.response.send_modal(ResignationApproveModal(
+                interaction.message, app_id, user_id, nickname, static_id, rank
+            ))
+
+class ResignationApproveModal(disnake.ui.Modal):
+    def __init__(self, target_message, app_id, user_id, nickname, static_id, rank):
+        self.target_message = target_message
+        self.app_id = app_id
+        self.target_user_id = user_id
+        self.nickname = nickname
+        self.static_id = static_id
+        self.rank = rank
+        
+        components = [
+            disnake.ui.TextInput(
+                label="Занести в ЧС? (Да / Нет)",
+                custom_id="bl_decision",
+                required=True,
+                max_length=10
+            ),
+            disnake.ui.TextInput(
+                label="Срок ЧС (если Да)",
+                custom_id="bl_duration",
+                required=False,
+                placeholder="Например: 15 дней, 2 месяца, навсегда",
+                max_length=50
+            )
+        ]
+        super().__init__(title="Одобрение увольнения (ПСЖ)", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+        target = guild.get_member(self.target_user_id)
+        if not target:
+            await interaction.followup.send(components=[v2_msg("Сотрудник покинул сервер.")], ephemeral=True)
+            return
             bot_member = guild.get_member(interaction.client.user.id)
             errors = []
             removed_roles_list = []
@@ -983,19 +991,54 @@ class ResignationActionView(disnake.ui.View):
             if errors:
                 status_text += f"\nОшибки: {', '.join(errors)}"
             new_container = build_resignation_container(
-                app_id=app_id,
+                app_id=self.app_id,
                 user=target,
-                nickname=nickname,
-                static_id=static_id,
-                rank=rank,
+                nickname=self.nickname,
+                static_id=self.static_id,
+                rank=self.rank,
                 reason="Собственное желание",
                 status_text=status_text,
                 guild=guild,
             )
-            await interaction.message.edit(components=[new_container])
+            await self.target_message.edit(components=[new_container])
+            
+            bl_decision = interaction.text_values.get("bl_decision", "").strip().lower()
+            want_bl = bl_decision in ("да", "yes", "д", "y", "+")
+            if want_bl:
+                bl_duration = interaction.text_values.get("bl_duration", "").strip()
+                from database import add_to_blacklist
+                from utils.helpers import parse_duration
+                duration_display = bl_duration or "Навсегда"
+                expires_at = None
+                if bl_duration:
+                    dt = parse_duration(bl_duration)
+                    expires_at = dt.isoformat() if dt else None
+                
+                add_to_blacklist(
+                    user_id=target.id,
+                    nickname=base_name,
+                    static_id=self.static_id,
+                    reason="ПСЖ",
+                    added_by_id=member.id,
+                    added_by_name=str(member),
+                    expires_at=expires_at,
+                )
+                if settings.blacklist_channel_id:
+                    bl_ch = guild.get_channel(settings.blacklist_channel_id)
+                    if bl_ch:
+                        pings = " ".join([f"<@&{r}>" for r in settings.blacklist_ping_roles])
+                        bl_embed = disnake.Embed(title="Занесение в ЧС (ПСЖ)", color=disnake.Color.red())
+                        bl_embed.add_field(name="Сотрудник", value=target.mention, inline=False)
+                        bl_embed.add_field(name="Причина", value="ПСЖ", inline=False)
+                        bl_embed.add_field(name="Срок", value=duration_display, inline=False)
+                        bl_embed.add_field(name="Инициатор", value=member.mention, inline=False)
+                        try:
+                            await bl_ch.send(content=pings, embed=bl_embed)
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
             logger.info(
                 "ЗАЯВЛЕНИЕ НА УВОЛЬНЕНИЕ ОДОБРЕНО | Номер: #%s | Сотрудник: %s (ID: %s) | Выполнил: %s (ID: %s) | Снятые роли: %s",
-                app_id, target, target.id, member, member.id, ", ".join(removed_roles_list)
+                self.app_id, target, target.id, member, member.id, ", ".join(removed_roles_list)
             )
             desc_dm = (
                 f"### Уведомление об увольнении #{app_id}\n\n"

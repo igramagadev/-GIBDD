@@ -267,6 +267,19 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             max_length=500,
             style=disnake.TextInputStyle.paragraph
         ))
+        components.append(disnake.ui.TextInput(
+            label="Занести в ЧС? (Да / Нет)",
+            custom_id="bl_decision",
+            required=True,
+            max_length=10
+        ))
+        components.append(disnake.ui.TextInput(
+            label="Срок ЧС (если Да)",
+            custom_id="bl_duration",
+            required=False,
+            placeholder="Например: 15 дней, 2 месяца, навсегда",
+            max_length=50
+        ))
         super().__init__(title="Увольнение сотрудника", components=components)
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
@@ -356,6 +369,42 @@ class AuditDismissReasonModal(disnake.ui.Modal):
             removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет"
         )
         set_user_status(target.id, "fired")
+
+        bl_decision = interaction.text_values.get("bl_decision", "").strip().lower()
+        want_bl = bl_decision in ("да", "yes", "д", "y", "+")
+        if want_bl:
+            bl_duration = interaction.text_values.get("bl_duration", "").strip()
+            from database import add_to_blacklist
+            from utils.helpers import parse_duration
+            duration_display = bl_duration or "Навсегда"
+            expires_at = None
+            if bl_duration:
+                dt = parse_duration(bl_duration)
+                expires_at = dt.isoformat() if dt else None
+            
+            add_to_blacklist(
+                user_id=target.id,
+                nickname=base_name,
+                static_id=static_id,
+                reason=reason_val,
+                added_by_id=performer.id,
+                added_by_name=str(performer),
+                expires_at=expires_at,
+            )
+            
+            if settings.blacklist_channel_id:
+                bl_ch = guild.get_channel(settings.blacklist_channel_id)
+                if bl_ch:
+                    pings = " ".join([f"<@&{r}>" for r in settings.blacklist_ping_roles])
+                    bl_embed = disnake.Embed(title="Занесение в ЧС (Кадровый Аудит)", color=disnake.Color.red())
+                    bl_embed.add_field(name="Сотрудник", value=target.mention, inline=False)
+                    bl_embed.add_field(name="Причина", value=reason_val, inline=False)
+                    bl_embed.add_field(name="Срок", value=duration_display, inline=False)
+                    bl_embed.add_field(name="Инициатор", value=performer.mention, inline=False)
+                    try:
+                        await bl_ch.send(content=pings, embed=bl_embed)
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
         await post_audit_container(
             guild,
             build_audit_container(
