@@ -72,6 +72,7 @@ class GibddBot(commands.Bot):
         panel_jobs = [
             ("ApplicationsCog", "init_panel"),
             ("AuditCog", "init_panel"),
+            ("StaffRequestsCog", "init_panel"),
         ]
         for cog_name, method_name in panel_jobs:
             cog = self.get_cog(cog_name)

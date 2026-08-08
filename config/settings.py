@@ -126,6 +126,9 @@ class Settings:
     blacklist_ping_roles: list[int] = field(
         default_factory=lambda: _int_list_env("BLACKLIST_PING_ROLES", [])
     )
+    staff_requests_panel_channel_id: int = field(
+        default_factory=lambda: _int_env("STAFF_REQUESTS_PANEL_CHANNEL_ID", 0)
+    )
     staff_requests_channel_id: int = field(
         default_factory=lambda: _int_env("STAFF_REQUESTS_CHANNEL_ID", 0)
     )
@@ -157,18 +160,14 @@ class Settings:
     )
 
     button_cooldown_seconds: float = field(
-        default_factory=lambda: float(os.getenv("BUTTON_COOLDOWN_SECONDS", "3"))
-    )
-
-    battalion_assignment_channel_id: int = field(
-        default_factory=lambda: _int_env("BATTALION_ASSIGNMENT_CHANNEL_ID", 0)
+        default_factory=lambda: _int_env("BUTTON_COOLDOWN_SECONDS", 3) / 1 or 3.0
     )
 
     roles_to_cleanup_names: list[str] = field(
         default_factory=lambda: _list_env("ROLES_TO_CLEANUP_NAMES", _DEFAULT_ROLES_TO_CLEANUP)
     )
     ranks: list[str] = field(
-        default_factory=lambda: os.getenv("RANKS", "").split(",")
+        default_factory=lambda: [r.strip() for r in os.getenv("RANKS", "").split(",") if r.strip()]
     )
     
     position_role_ids: dict[str, int] = field(

@@ -132,21 +132,26 @@ class AuditPanelActions(ui.View):
             ephemeral=True,
         )
 
+
+class StaffRequestPanelActions(ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
     @ui.button(
         label="Подать рапорт командира",
-        style=disnake.ButtonStyle.secondary,
-        custom_id="panel:audit:report",
+        style=disnake.ButtonStyle.primary,
+        custom_id="panel:staff_request:submit",
     )
     async def report_button(self, button: ui.Button, interaction: disnake.MessageInteraction) -> None:
         from cogs.staff_requests import can_submit_request, StaffRequestUserSelectView
-        
+
         if not can_submit_request(interaction.user):
             await interaction.response.send_message(
-                components=[v2_msg("У вас нет прав подавать рапорты командира (доступно от Старшины).")], 
+                components=[v2_msg("У вас нет прав подавать рапорты командира (доступно от Старшины).")],
                 ephemeral=True
             )
             return
-            
+
         remaining = interaction_guard.check_cooldown(
             interaction.user.id, "panel:report", settings.button_cooldown_seconds
         )
@@ -156,7 +161,7 @@ class AuditPanelActions(ui.View):
                 ephemeral=True,
             )
             return
-            
+
         view = StaffRequestUserSelectView()
         action_row = disnake.ui.ActionRow(*view.children)
         container = disnake.ui.Container(
@@ -171,16 +176,19 @@ PERSISTENT_VIEWS = (
     ApplicationPanelActions,
     ResignationPanelActions,
     AuditPanelActions,
+    StaffRequestPanelActions,
 )
 
 PANEL_LAYOUTS = {
     "application": ApplicationPanelActions,
     "resignation": ResignationPanelActions,
     "audit": AuditPanelActions,
+    "staff_request": StaffRequestPanelActions,
 }
 
 PANEL_TITLES = {
     "application": "Подача заявок на роли",
     "resignation": "Заявление на увольнение",
     "audit": "Кадровый аудит",
+    "staff_request": "Рапорты командиров",
 }

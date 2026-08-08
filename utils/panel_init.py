@@ -22,6 +22,7 @@ async def send_v2_panel(
             "application": "panel:application:submit",
             "resignation": "panel:resignation:submit",
             "audit": "panel:audit:open",
+            "staff_request": "panel:staff_request:submit",
         }
         target_custom_id = panel_custom_ids.get(panel_key, "")
         deleted = 0
@@ -85,6 +86,16 @@ async def send_v2_panel(
                     "• **Уволить** — расторжение контракта\n"
                     "• **Повысить / Понизить** — изменение звания\n"
                     "• **Перевод** — перевод сотрудника в другой отдел\n"
+                )
+            elif panel_key == "staff_request":
+                desc_display = disnake.ui.TextDisplay(
+                    "# Списки повышения\nПодача рапортов на сотрудников\n\n"
+                    "Интерфейс для подачи рапортов на изменение личного состава.\n\n"
+                    "**Доступные действия:**\n"
+                    "• **Повысить** \u2014 рапорт на повышение сотрудника\n"
+                    "• **Понизить** \u2014 рапорт на понижение сотрудника\n"
+                    "• **Уволить** \u2014 рапорт на увольнение сотрудника\n\n"
+                    "**Доступно от звания Старшина и выше.**"
                 )
             else:
                 logger.error("Неизвестный ключ панели в блоке генерации: %s", panel_key)

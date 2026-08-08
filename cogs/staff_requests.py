@@ -1,14 +1,39 @@
 import disnake
 from disnake.ext import commands
 import logging
+import time
 from config.constants import settings
-from database import get_user, add_or_update_user
-from utils.formatting import v2_msg
+from database import get_user, add_or_update_user, add_to_blacklist
+from utils.helpers import v2_msg, can_manage_audit, parse_duration
 logger = logging.getLogger(__name__)
-_request_sessions = {}
-def _get_req_session(user_id: int) -> dict:
-    return _request_sessions.get(user_id)
+
+_REQUEST_SESSION_TTL = 600  # 10 минут
+_request_sessions: dict[int, dict] = {}
+
+
+def _cleanup_request_sessions() -> None:
+    now = time.monotonic()
+    expired = [
+        uid for uid, data in _request_sessions.items()
+        if now - data.get("_ts", 0) > _REQUEST_SESSION_TTL
+    ]
+    for uid in expired:
+        del _request_sessions[uid]
+
+
+def _get_req_session(user_id: int) -> dict | None:
+    session = _request_sessions.get(user_id)
+    if not session:
+        return None
+    if time.monotonic() - session.get("_ts", 0) > _REQUEST_SESSION_TTL:
+        _request_sessions.pop(user_id, None)
+        return None
+    return session
+
+
 def _set_req_session(user_id: int, data: dict):
+    _cleanup_request_sessions()
+    data["_ts"] = time.monotonic()
     _request_sessions[user_id] = data
 def can_submit_request(member: disnake.Member) -> bool:
     starshina_idx = 5
@@ -204,7 +229,6 @@ class StaffRequestApprovalView(disnake.ui.View):
         super().__init__(timeout=None)
     @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="req:approve")
     async def approve(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        from utils.auth import can_manage_audit
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message("У вас нет прав одобрять рапорты.", ephemeral=True)
             return
@@ -263,8 +287,24 @@ class StaffRequestApprovalView(disnake.ui.View):
                 add_or_update_user(target_id, user_db["nickname"], static_id, old_rank, "fired")
             if "ЧС: Да" in desc:
                 dur_match = re.search(r'\(Срок:\s*(.*?)\)', desc)
-                duration = dur_match.group(1).strip() if dur_match else "Не указано"
-                add_blacklist(target_id, reason, interaction.user.id)
+                duration_str = dur_match.group(1).strip() if dur_match else None
+                duration_display = duration_str or "Навсегда"
+                expires_at = None
+                if duration_str:
+                    dt = parse_duration(duration_str)
+                    expires_at = dt.isoformat() if dt else None
+                user_db_bl = get_user(target_id)
+                nickname_bl = user_db_bl["nickname"] if user_db_bl else str(target)
+                static_id_bl = user_db_bl["static_id"] if user_db_bl else "Не указан"
+                add_to_blacklist(
+                    user_id=target_id,
+                    nickname=nickname_bl,
+                    static_id=static_id_bl,
+                    reason=reason,
+                    added_by_id=interaction.user.id,
+                    added_by_name=str(interaction.user),
+                    expires_at=expires_at,
+                )
                 if settings.blacklist_channel_id:
                     bl_ch = interaction.guild.get_channel(settings.blacklist_channel_id)
                     if bl_ch:
@@ -272,7 +312,7 @@ class StaffRequestApprovalView(disnake.ui.View):
                         bl_embed = disnake.Embed(title="Занесение в ЧС", color=disnake.Color.red())
                         bl_embed.add_field(name="Сотрудник", value=target.mention, inline=False)
                         bl_embed.add_field(name="Причина", value=reason, inline=False)
-                        bl_embed.add_field(name="Срок", value=duration, inline=False)
+                        bl_embed.add_field(name="Срок", value=duration_display, inline=False)
                         bl_embed.add_field(name="Инициатор", value=interaction.user.mention, inline=False)
                         await bl_ch.send(content=pings, embed=bl_embed)
             asyncio.create_task(update_cpps_roster(interaction.guild))
@@ -313,7 +353,6 @@ class StaffRequestApprovalView(disnake.ui.View):
             await interaction.followup.send("Сотрудник обновлён.", ephemeral=True)
     @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="req:deny")
     async def deny(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        from utils.auth import can_manage_audit
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message("У вас нет прав отклонять рапорты.", ephemeral=True)
             return
@@ -321,5 +360,14 @@ class StaffRequestApprovalView(disnake.ui.View):
         embed.color = disnake.Color.red()
         embed.add_field(name="Статус", value=f"❌ Отклонено {interaction.user.mention}")
         await interaction.response.edit_message(embed=embed, view=None)
+class StaffRequestsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def init_panel(self):
+        from utils.panel_init import send_v2_panel
+        await send_v2_panel(self.bot, settings.staff_requests_panel_channel_id, "staff_request")
+
 def setup(bot: commands.Bot):
-    bot.add_view(StaffRequestApprovalView())
+    bot.add_cog(StaffRequestsCog(bot))
+    bot.add_view(StaffRequestApprovalView())

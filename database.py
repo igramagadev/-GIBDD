@@ -379,6 +379,7 @@ def get_recent_audit_records(limit: int = 20) -> list[tuple]:
 
 def get_last_promotion(target_user_id: int) -> dict | None:
     conn = _connect()
+    row = None
     try:
         row = conn.execute(
             """
@@ -388,17 +389,16 @@ def get_last_promotion(target_user_id: int) -> dict | None:
             """,
             (target_user_id,),
         ).fetchone()
+        if not row:
+            return None
+        reason, performer_name, created_at_str = row
     except sqlite3.Error as exc:
         logger.error("Ошибка get_last_promotion(%s): %s", target_user_id, exc)
         return None
     finally:
         conn.close()
 
-    if not row:
-        return None
-
-    reason, performer_name, created_at_str = row
-
+    # Обработка результата после закрытия соединения (данные уже скопированы из row)
     try:
         if "T" in created_at_str:
             dt = datetime.fromisoformat(created_at_str)

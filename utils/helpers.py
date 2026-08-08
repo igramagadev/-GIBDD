@@ -74,7 +74,7 @@ def can_manage_role(bot_member: disnake.Member | None, role: disnake.Role | None
 
 
 def has_staff_role(member: disnake.Member, guild: disnake.Guild) -> bool:
-    role_id = settings.staff_role_id or settings.ss_role_id
+    role_id = settings.ss_role_id
     if not role_id:
         return False
     staff_role = guild.get_role(role_id)
@@ -110,7 +110,8 @@ def can_manage_staff(member: disnake.Member, guild: disnake.Guild) -> bool:
             captain_idx = i
             break
     if captain_idx == -1:
-        return True
+        # Звание не найдено в конфиге — отказываем в доступе (fail-secure)
+        return False
     return get_member_rank_index(member, guild) >= captain_idx
 
 
