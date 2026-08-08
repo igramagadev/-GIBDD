@@ -861,18 +861,62 @@ class ResignationModal(disnake.ui.Modal):
 class ResignationActionView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
     @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="approve_resignation")
     async def approve_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-            if not target:
-                await interaction.response.send_message(
-                    components=[v2_msg(f"Пользователь с ID {user_id} покинул сервер.")],
-                    ephemeral=True,
-                )
-                return
-            
-            await interaction.response.send_modal(ResignationApproveModal(
-                interaction.message, app_id, user_id, nickname, static_id, rank
-            ))
+        member = interaction.user
+        if not can_manage_resignations(member):
+            await interaction.response.send_message(
+                components=[v2_msg("Недостаточно прав. ")],
+                ephemeral=True
+            )
+            return
+        app = get_application_by_message_id(interaction.message.id)
+        if not app:
+            await interaction.response.send_message(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
+            return
+        app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = app
+        if status != "pending":
+            await interaction.response.send_message(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
+            return
+        if member.id == user_id:
+            await interaction.response.send_message(components=[v2_msg("Нельзя одобрять своё собственное заявление.")], ephemeral=True)
+            return
+        target = interaction.guild.get_member(user_id)
+        if not target:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Пользователь с ID {user_id} покинул сервер.")],
+                ephemeral=True,
+            )
+            return
+        
+        await interaction.response.send_modal(ResignationApproveModal(
+            interaction.message, app_id, user_id, nickname, static_id, rank
+        ))
+
+    @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="reject_resignation")
+    async def reject_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        member = interaction.user
+        if not can_manage_resignations(member):
+            await interaction.response.send_message(
+                components=[v2_msg("Недостаточно прав. ")],
+                ephemeral=True
+            )
+            return
+        app = get_application_by_message_id(interaction.message.id)
+        if not app:
+            await interaction.response.send_message(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
+            return
+        _, user_id, _, _, _, _, _, status, *_ = app
+        if status != "pending":
+            await interaction.response.send_message(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
+            return
+        if member.id == user_id:
+            await interaction.response.send_message(components=[v2_msg("Нельзя отклонять своё собственное заявление.")], ephemeral=True)
+            return
+        modal = ResignationRejectionReasonModal(app_data=app, interaction_message=interaction.message)
+        await interaction.response.send_modal(modal)
+
 
 class ResignationApproveModal(disnake.ui.Modal):
     def __init__(self, target_message, app_id, user_id, nickname, static_id, rank):
@@ -902,12 +946,27 @@ class ResignationApproveModal(disnake.ui.Modal):
 
     async def callback(self, interaction: disnake.ModalInteraction):
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        member = interaction.user
-        target = guild.get_member(self.target_user_id)
-        if not target:
-            await interaction.followup.send(components=[v2_msg("Сотрудник покинул сервер.")], ephemeral=True)
-            return
+        async with interaction_guard.lock(self.target_message.id) as acquired:
+            if not acquired:
+                await interaction.followup.send(
+                    components=[v2_msg("Это заявление уже обрабатывает другой модератор.")],
+                    ephemeral=True,
+                )
+                return
+            
+            # Re-fetch app to make sure it wasn't processed while modal was open
+            app = get_application_by_message_id(self.target_message.id)
+            if not app or app[7] != "pending":
+                await interaction.followup.send(components=[v2_msg("Заявление уже было обработано.")], ephemeral=True)
+                return
+
+            guild = interaction.guild
+            member = interaction.user
+            target = guild.get_member(self.target_user_id)
+            if not target:
+                await interaction.followup.send(components=[v2_msg("Сотрудник покинул сервер.")], ephemeral=True)
+                return
+            
             bot_member = guild.get_member(interaction.client.user.id)
             errors = []
             removed_roles_list = []
@@ -937,6 +996,7 @@ class ResignationApproveModal(disnake.ui.Modal):
                         removed_roles_list.append(clean_role_name(role.name))
                     except Exception as exc:
                         errors.append(f"{role.name}: {exc}")
+            
             fired_role = guild.get_role(settings.fired_role_id)
             issued_roles_list = []
             if fired_role and fired_role not in target.roles and can_manage_role(bot_member, fired_role):
@@ -945,12 +1005,13 @@ class ResignationApproveModal(disnake.ui.Modal):
                     issued_roles_list.append(clean_role_name(fired_role.name))
                 except Exception as exc:
                     errors.append(f"Уволен: {exc}")
-            if nickname and nickname not in ("Не указан", ""):
-                base_name = nickname
+            
+            raw_name = self.nickname if (self.nickname and self.nickname not in ("Не указан", "")) else target.display_name
+            if " | " in raw_name:
+                base_name = raw_name.split(" | ")[-1].strip()
             else:
-                base_name = target.display_name
-                if " | " in base_name:
-                    base_name = base_name.split(" | ", 1)[1]
+                base_name = raw_name
+                
             fired_nick = f"Уволен | {base_name}"
             if len(fired_nick) > 32:
                 available = 32 - len("Уволен | ")
@@ -959,13 +1020,14 @@ class ResignationApproveModal(disnake.ui.Modal):
                 await target.edit(nick=fired_nick)
             except Exception as exc:
                 errors.append(f"Ошибка изменения ника: {exc}")
-            update_application_status(app_id, "issued", member.id, str(member))
+            
+            update_application_status(self.app_id, "issued", member.id, str(member))
             set_user_status(target.id, "fired")
             add_audit_record(
                 action="Уволить",
                 target_user_id=target.id,
                 target_user_name=str(target),
-                target_static_id=static_id,
+                target_static_id=self.static_id,
                 target_rank="",
                 target_position="",
                 method="Собственное желание",
@@ -980,10 +1042,11 @@ class ResignationApproveModal(disnake.ui.Modal):
                 action_verb="увольняет",
                 performer=member,
                 target=target,
-                static_id=static_id,
+                static_id=self.static_id,
                 reason="Собственное желание (Заявление)"
             )
             await post_audit_container(guild, audit_cont)
+            
             staff_title = get_staff_title(member, guild)
             status_text = f"Одобрено {staff_title}\nСотрудник уволен"
             if removed_roles_list:
@@ -1033,7 +1096,10 @@ class ResignationApproveModal(disnake.ui.Modal):
                         bl_embed.add_field(name="Срок", value=duration_display, inline=False)
                         bl_embed.add_field(name="Инициатор", value=member.mention, inline=False)
                         try:
-                            await bl_ch.send(content=pings, embed=bl_embed)
+                            kwargs = {"embed": bl_embed}
+                            if pings:
+                                kwargs["content"] = pings
+                            await bl_ch.send(**kwargs)
                         except Exception as e:
                             logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
             logger.info(
@@ -1041,7 +1107,7 @@ class ResignationApproveModal(disnake.ui.Modal):
                 self.app_id, target, target.id, member, member.id, ", ".join(removed_roles_list)
             )
             desc_dm = (
-                f"### Уведомление об увольнении #{app_id}\n\n"
+                f"### Уведомление об увольнении #{self.app_id}\n\n"
                 f"Ваше заявление на увольнение было **одобрено** {staff_title}.\n"
                 f"> **Снятые роли:** {', '.join(removed_roles_list) if removed_roles_list else 'Нет'}"
             )
@@ -1055,35 +1121,6 @@ class ResignationApproveModal(disnake.ui.Modal):
                 components=[v2_msg(f"Заявление одобрено, роли с {target.mention} сняты.\n{dm_status}")],
                 ephemeral=True
             )
-    @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="reject_resignation")
-    async def reject_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        async with interaction_guard.lock(interaction.message.id) as acquired:
-            if not acquired:
-                await interaction.response.send_message(
-                    components=[v2_msg("Это заявление уже обрабатывает другой модератор.")],
-                    ephemeral=True,
-                )
-                return
-            member = interaction.user
-            if not can_manage_resignations(member):
-                await interaction.response.send_message(
-                    components=[v2_msg("Недостаточно прав. ")],
-                    ephemeral=True
-                )
-                return
-            app = get_application_by_message_id(interaction.message.id)
-            if not app:
-                await interaction.response.send_message(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
-                return
-            _, user_id, _, _, _, _, _, status, *_ = app
-            if status != "pending":
-                await interaction.response.send_message(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
-                return
-            if member.id == user_id:
-                await interaction.response.send_message(components=[v2_msg("Нельзя отклонять своё собственное заявление.")], ephemeral=True)
-                return
-            modal = ResignationRejectionReasonModal(app_data=app, interaction_message=interaction.message)
-            await interaction.response.send_modal(modal)
 class ResignationRejectionReasonModal(disnake.ui.Modal):
     def __init__(self, app_data, interaction_message):
         self.app_data = app_data

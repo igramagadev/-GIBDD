@@ -402,7 +402,10 @@ class AuditDismissReasonModal(disnake.ui.Modal):
                     bl_embed.add_field(name="Срок", value=duration_display, inline=False)
                     bl_embed.add_field(name="Инициатор", value=performer.mention, inline=False)
                     try:
-                        await bl_ch.send(content=pings, embed=bl_embed)
+                        kwargs = {"embed": bl_embed}
+                        if pings:
+                            kwargs["content"] = pings
+                        await bl_ch.send(**kwargs)
                     except Exception as e:
                         logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
         await post_audit_container(
