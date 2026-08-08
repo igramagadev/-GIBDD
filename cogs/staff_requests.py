@@ -160,7 +160,7 @@ class StaffRequestReasonModal(disnake.ui.Modal):
         ]
         super().__init__(title="Рапорт (Повышение/Понижение)", components=components)
     async def callback(self, interaction: disnake.ModalInteraction):
-        await _submit_request(interaction, self.text_values["reason"].strip(), None, None)
+        await _submit_request(interaction, interaction.text_values["reason"].strip(), None, None)
 class StaffRequestFireModal(disnake.ui.Modal):
     def __init__(self):
         components = [
@@ -187,9 +187,9 @@ class StaffRequestFireModal(disnake.ui.Modal):
         ]
         super().__init__(title="Рапорт (Увольнение)", components=components)
     async def callback(self, interaction: disnake.ModalInteraction):
-        reason = self.text_values["reason"].strip()
-        bl_decision = self.text_values["bl_decision"].strip().lower()
-        bl_duration = self.text_values.get("bl_duration", "").strip()
+        reason = interaction.text_values["reason"].strip()
+        bl_decision = interaction.text_values["bl_decision"].strip().lower()
+        bl_duration = interaction.text_values.get("bl_duration", "").strip()
         want_bl = False
         if bl_decision in ("да", "yes", "+", "y", "д", "da"):
             want_bl = True
