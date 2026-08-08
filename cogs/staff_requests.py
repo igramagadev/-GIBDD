@@ -36,14 +36,17 @@ def _set_req_session(user_id: int, data: dict):
     data["_ts"] = time.monotonic()
     _request_sessions[user_id] = data
 def can_submit_request(member: disnake.Member) -> bool:
-    starshina_idx = 5
+    starshina_idx = 4
     if starshina_idx >= len(settings.ranks):
         return False
+    allowed_role_ids = set()
+    for rank_name in settings.ranks[starshina_idx:]:
+        role_id = settings.ranks_map.get(rank_name)
+        if role_id:
+            allowed_role_ids.add(role_id)
     for role in member.roles:
-        if role.name in settings.ranks:
-            idx = settings.ranks.index(role.name)
-            if idx >= starshina_idx:
-                return True
+        if role.id in allowed_role_ids:
+            return True
     return False
 class StaffRequestUserSelectView(disnake.ui.View):
     def __init__(self):
