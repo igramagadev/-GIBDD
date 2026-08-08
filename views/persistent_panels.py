@@ -138,7 +138,7 @@ class StaffRequestPanelActions(ui.View):
         super().__init__(timeout=None)
 
     @ui.button(
-        label="Подать рапорт командира",
+        label="Подать рапорт",
         style=disnake.ButtonStyle.primary,
         custom_id="panel:staff_request:submit",
     )
@@ -147,7 +147,7 @@ class StaffRequestPanelActions(ui.View):
 
         if not can_submit_request(interaction.user):
             await interaction.response.send_message(
-                components=[v2_msg("У вас нет прав подавать рапорты командира (доступно от Старшины).")],
+                components=[v2_msg("У вас нет прав подавать рапорты (доступно от Старшины).")],
                 ephemeral=True
             )
             return
