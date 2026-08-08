@@ -3,7 +3,7 @@ from disnake.ext import commands
 import logging
 import time
 from config.constants import settings
-from database import get_user, add_or_update_user, add_to_blacklist
+from database import get_user, add_or_update_user, add_to_blacklist, add_audit_record, is_blacklisted, add_staff_request, get_staff_request_by_message_id, update_staff_request_status
 from utils.helpers import v2_msg, can_manage_audit, parse_duration
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,42 @@ class StaffRequestFireModal(disnake.ui.Modal):
         if bl_decision in ("да", "yes", "+", "y", "д", "da"):
             want_bl = True
         await _submit_request(interaction, reason, want_bl, bl_duration)
+def build_request_container(
+    target_mention: str,
+    action: str,
+    reason: str,
+    old_rank: str,
+    new_rank: str,
+    want_bl: bool,
+    bl_duration: str,
+    status_text: str,
+    action_row: disnake.ui.ActionRow = None,
+    performer_mention: str = ""
+) -> disnake.ui.Container:
+    if action == "Fire":
+        title = "Рапорт на увольнение"
+        desc = f"**Сотрудник:** {target_mention}\n**Причина:** {reason}\n**ЧС:** {'Да' if want_bl else 'Нет'}"
+        if want_bl and bl_duration:
+            desc += f" (Срок: {bl_duration})"
+    else:
+        action_ru = "Повышение" if action == "Promote" else "Понижение"
+        title = f"Рапорт на {action_ru.lower()}"
+        desc = f"**Сотрудник:** {target_mention}\n**Изменение:** {old_rank} ➔ {new_rank}\n**Причина:** {reason}"
+    
+    components = [
+        disnake.ui.TextDisplay(f"### {title}"),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay(desc)
+    ]
+    if performer_mention:
+        components.append(disnake.ui.TextDisplay(f"**Подал рапорт:** {performer_mention}"))
+    components.append(disnake.ui.Separator())
+    components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
+    if action_row:
+        components.append(action_row)
+    return disnake.ui.Container(*components, accent_colour=disnake.Colour(0x2C2F33))
+
+
 async def _submit_request(interaction: disnake.ModalInteraction, reason: str, want_bl: bool, bl_duration: str):
     session = _get_req_session(interaction.user.id)
     if not session:
@@ -211,54 +247,83 @@ async def _submit_request(interaction: disnake.ModalInteraction, reason: str, wa
         return
     action = session["action"]
     target_mention = session["target_mention"]
+    target_id = session["target_id"]
     old_rank = session["old_rank"]
-    if action == "Fire":
-        title = "Рапорт на увольнение"
-        desc = f"**Сотрудник:** {target_mention}\n**Причина:** {reason}\n**ЧС:** {'Да' if want_bl else 'Нет'}"
-        if want_bl and bl_duration:
-            desc += f" (Срок: {bl_duration})"
-    else:
-        new_rank = session.get("new_rank", "Неизвестно")
-        action_ru = "Повышение" if action == "Promote" else "Понижение"
-        title = f"Рапорт на {action_ru.lower()}"
-        desc = f"**Сотрудник:** {target_mention}\n**Изменение:** {old_rank} ➔ {new_rank}\n**Причина:** {reason}"
-    embed = disnake.Embed(title=title, description=desc, color=disnake.Color(0x2C2F33))
-    embed.add_field(name="Подал рапорт", value=interaction.user.mention, inline=False)
+    new_rank = session.get("new_rank", "")
+    
     view = StaffRequestApprovalView()
-    msg = await channel.send(embed=embed, view=view)
+    action_row = disnake.ui.ActionRow(*view.children)
+    
+    container = build_request_container(
+        target_mention=target_mention,
+        action=action,
+        reason=reason,
+        old_rank=old_rank,
+        new_rank=new_rank,
+        want_bl=want_bl,
+        bl_duration=bl_duration,
+        status_text="Ожидает рассмотрения",
+        action_row=action_row,
+        performer_mention=interaction.user.mention
+    )
+    msg = await channel.send(components=[container])
+    
+    add_staff_request(
+        message_id=msg.id,
+        target_id=target_id,
+        target_mention=target_mention,
+        action=action,
+        reason=reason,
+        old_rank=old_rank,
+        new_rank=new_rank,
+        want_bl=want_bl,
+        bl_duration=bl_duration
+    )
+    
     await interaction.followup.send(components=[v2_msg("Ваш рапорт успешно отправлен на рассмотрение старшему составу.")], ephemeral=True)
+
+
 class StaffRequestApprovalView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
     @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="req:approve")
     async def approve(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message("У вас нет прав одобрять рапорты.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        embed = interaction.message.embeds[0]
-        desc = embed.description
-        import re
-        target_match = re.search(r'<@!?(\d+)>', desc)
-        if not target_match:
-            await interaction.followup.send("Не удалось найти ID сотрудника в рапорте.", ephemeral=True)
+        
+        req = get_staff_request_by_message_id(interaction.message.id)
+        if not req:
+            await interaction.followup.send("Рапорт не найден в базе данных.", ephemeral=True)
             return
-        target_id = int(target_match.group(1))
+        if req["status"] != "pending":
+            await interaction.followup.send(f"Рапорт уже обработан (статус: {req['status']}).", ephemeral=True)
+            return
+            
+        target_id = req["target_id"]
         target = interaction.guild.get_member(target_id)
         if not target:
             await interaction.followup.send("Сотрудник уже покинул сервер.", ephemeral=True)
             return
-        from database import get_user, add_or_update_user, add_audit_record, is_blacklisted, add_blacklist
+            
         from utils.helpers import sync_user_roles_and_nickname
         import asyncio
         from utils.roster_generator import update_cpps_roster
+        
         user_db = get_user(target_id)
         static_id = user_db.get("static_id", "Не указан") if user_db else "Не указан"
-        old_rank = user_db.get("rank", "") if user_db else ""
-        reason_match = re.search(r'\*\*Причина:\*\*\s*(.*)', desc)
-        reason = reason_match.group(1).strip() if reason_match else "По рапорту командира"
-        title = embed.title.lower()
-        if "увольнение" in title:
+        old_rank = user_db.get("rank", "") if user_db else req["old_rank"]
+        
+        action = req["action"]
+        reason = req["reason"]
+        target_mention = req["target_mention"]
+        new_rank = req["new_rank"]
+        want_bl = req["want_bl"]
+        bl_duration = req["bl_duration"]
+        
+        if action == "Fire":
             fired_role = interaction.guild.get_role(settings.fired_role_id)
             roles_to_remove = []
             for r in target.roles:
@@ -272,6 +337,7 @@ class StaffRequestApprovalView(disnake.ui.View):
                 await target.edit(nick=None)
             except Exception as e:
                 errors.append(str(e))
+                
             add_audit_record(
                 action="Уволить",
                 target_user_id=target_id,
@@ -286,15 +352,15 @@ class StaffRequestApprovalView(disnake.ui.View):
                 issued_roles="Уволен",
                 removed_roles=", ".join(r.name for r in roles_to_remove)
             )
+            
             if user_db:
                 add_or_update_user(target_id, user_db["nickname"], static_id, old_rank, "fired")
-            if "ЧС: Да" in desc:
-                dur_match = re.search(r'\(Срок:\s*(.*?)\)', desc)
-                duration_str = dur_match.group(1).strip() if dur_match else None
-                duration_display = duration_str or "Навсегда"
+                
+            if want_bl:
+                duration_display = bl_duration or "Навсегда"
                 expires_at = None
-                if duration_str:
-                    dt = parse_duration(duration_str)
+                if bl_duration:
+                    dt = parse_duration(bl_duration)
                     expires_at = dt.isoformat() if dt else None
                 user_db_bl = get_user(target_id)
                 nickname_bl = user_db_bl["nickname"] if user_db_bl else str(target)
@@ -312,27 +378,42 @@ class StaffRequestApprovalView(disnake.ui.View):
                     bl_ch = interaction.guild.get_channel(settings.blacklist_channel_id)
                     if bl_ch:
                         pings = " ".join([f"<@&{r}>" for r in settings.blacklist_ping_roles])
-                        bl_embed = disnake.Embed(title="Занесение в ЧС", color=disnake.Color.red())
+                        bl_embed = disnake.Embed(title="Занесение в ЧС (Рапорт)", color=disnake.Color.red())
                         bl_embed.add_field(name="Сотрудник", value=target.mention, inline=False)
                         bl_embed.add_field(name="Причина", value=reason, inline=False)
                         bl_embed.add_field(name="Срок", value=duration_display, inline=False)
                         bl_embed.add_field(name="Инициатор", value=interaction.user.mention, inline=False)
-                        await bl_ch.send(content=pings, embed=bl_embed)
+                        try:
+                            kwargs = {"embed": bl_embed}
+                            if pings:
+                                kwargs["content"] = pings
+                            await bl_ch.send(**kwargs)
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
+                            
             asyncio.create_task(update_cpps_roster(interaction.guild))
-            embed.color = disnake.Color.green()
-            embed.add_field(name="Статус", value=f"✅ Одобрено {interaction.user.mention}")
-            await interaction.message.edit(embed=embed, view=None)
-            await interaction.followup.send("Сотрудник уволен.", ephemeral=True)
+            update_staff_request_status(interaction.message.id, "approved")
+            
+            container = build_request_container(
+                target_mention=target_mention,
+                action=action,
+                reason=reason,
+                old_rank=old_rank,
+                new_rank=new_rank,
+                want_bl=want_bl,
+                bl_duration=bl_duration,
+                status_text=f"✅ Одобрено {interaction.user.mention}",
+                action_row=None,
+                performer_mention=""
+            )
+            await interaction.message.edit(components=[container])
+            await interaction.followup.send(components=[v2_msg("Сотрудник уволен.")], ephemeral=True)
+            
         else:
-            action = "Promote" if "повышение" in title else "Demote"
             audit_action = "Повысить" if action == "Promote" else "Понизить"
-            rank_match = re.search(r'\*\*Изменение:\*\*\s*(.*?)\s*➔\s*(.*)', desc)
-            if not rank_match:
-                await interaction.followup.send("Не удалось определить новое звание.", ephemeral=True)
-                return
-            new_rank = rank_match.group(2).strip()
             bot_member = interaction.guild.get_member(interaction.client.user.id)
             issued_roles, removed_roles, errors = await sync_user_roles_and_nickname(target, interaction.guild, new_rank, bot_member)
+            
             add_audit_record(
                 action=audit_action,
                 target_user_id=target_id,
@@ -347,6 +428,7 @@ class StaffRequestApprovalView(disnake.ui.View):
                 issued_roles=", ".join(issued_roles),
                 removed_roles=", ".join(removed_roles)
             )
+            
             if user_db:
                 add_or_update_user(target_id, user_db["nickname"], static_id, new_rank, "active")
 
@@ -384,19 +466,53 @@ class StaffRequestApprovalView(disnake.ui.View):
                         logger.error(f"Не удалось отправить уведомление о зачислении: {e}")
 
             asyncio.create_task(update_cpps_roster(interaction.guild))
-            embed.color = disnake.Color.green()
-            embed.add_field(name="Статус", value=f"✅ Одобрено {interaction.user.mention}")
-            await interaction.message.edit(embed=embed, view=None)
-            await interaction.followup.send("Сотрудник обновлён.", ephemeral=True)
+            update_staff_request_status(interaction.message.id, "approved")
+            
+            container = build_request_container(
+                target_mention=target_mention,
+                action=action,
+                reason=reason,
+                old_rank=old_rank,
+                new_rank=new_rank,
+                want_bl=want_bl,
+                bl_duration=bl_duration,
+                status_text=f"✅ Одобрено {interaction.user.mention}",
+                action_row=None,
+                performer_mention=""
+            )
+            await interaction.message.edit(components=[container])
+            await interaction.followup.send(components=[v2_msg("Сотрудник обновлён.")], ephemeral=True)
+
     @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="req:deny")
     async def deny(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
         if not can_manage_audit(interaction.user):
             await interaction.response.send_message("У вас нет прав отклонять рапорты.", ephemeral=True)
             return
-        embed = interaction.message.embeds[0]
-        embed.color = disnake.Color.red()
-        embed.add_field(name="Статус", value=f"❌ Отклонено {interaction.user.mention}")
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.defer(ephemeral=True)
+        
+        req = get_staff_request_by_message_id(interaction.message.id)
+        if not req:
+            await interaction.followup.send("Рапорт не найден в базе данных.", ephemeral=True)
+            return
+        if req["status"] != "pending":
+            await interaction.followup.send(f"Рапорт уже обработан (статус: {req['status']}).", ephemeral=True)
+            return
+            
+        update_staff_request_status(interaction.message.id, "rejected")
+        container = build_request_container(
+            target_mention=req["target_mention"],
+            action=req["action"],
+            reason=req["reason"],
+            old_rank=req["old_rank"],
+            new_rank=req["new_rank"],
+            want_bl=req["want_bl"],
+            bl_duration=req["bl_duration"],
+            status_text=f"❌ Отклонено {interaction.user.mention}",
+            action_row=None,
+            performer_mention=""
+        )
+        await interaction.message.edit(components=[container])
+        await interaction.followup.send(components=[v2_msg("Рапорт отклонён.")], ephemeral=True)
 class StaffRequestsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot

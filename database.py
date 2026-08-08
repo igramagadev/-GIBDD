@@ -83,6 +83,23 @@ def init_db() -> None:
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS staff_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER,
+            target_id INTEGER,
+            target_mention TEXT,
+            action TEXT,
+            reason TEXT,
+            old_rank TEXT,
+            new_rank TEXT,
+            want_bl BOOLEAN,
+            bl_duration TEXT,
+            status TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("База данных инициализирована")

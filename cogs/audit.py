@@ -890,6 +890,152 @@ class AuditTransferReasonModal(disnake.ui.Modal):
         if errors:
             response += f"\nОшибки: {', '.join(errors)}"
         await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
+class AuditBlacklistAddModal(disnake.ui.Modal):
+    def __init__(self):
+        components = [
+            disnake.ui.TextInput(
+                label="Discord ID пользователя",
+                custom_id="target_id",
+                required=True,
+                max_length=25
+            ),
+            disnake.ui.TextInput(
+                label="Причина занесения",
+                custom_id="reason",
+                required=True,
+                max_length=150
+            ),
+            disnake.ui.TextInput(
+                label="Срок ЧС",
+                custom_id="duration",
+                required=False,
+                placeholder="Например: 15 дней, 2 месяца, навсегда",
+                max_length=50
+            ),
+            disnake.ui.TextInput(
+                label="Static ID (Если известен)",
+                custom_id="static_id",
+                required=False,
+                max_length=20
+            ),
+            disnake.ui.TextInput(
+                label="Никнейм (Если известен)",
+                custom_id="nickname",
+                required=False,
+                max_length=50
+            )
+        ]
+        super().__init__(title="Внесение в ЧС", components=components)
+    
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            target_id = int(interaction.text_values["target_id"].strip())
+        except ValueError:
+            await interaction.followup.send(components=[v2_msg("Неверный формат Discord ID.")], ephemeral=True)
+            return
+            
+        reason = interaction.text_values["reason"].strip()
+        duration_str = interaction.text_values.get("duration", "").strip()
+        static_id = interaction.text_values.get("static_id", "").strip() or "Не указан"
+        nickname = interaction.text_values.get("nickname", "").strip()
+        
+        if not nickname:
+            user = interaction.guild.get_member(target_id)
+            if user:
+                nickname = user.display_name
+            else:
+                nickname = "Неизвестно"
+                
+        from utils.helpers import parse_duration
+        from database import add_to_blacklist
+        
+        expires_at = None
+        duration_display = duration_str or "Навсегда"
+        if duration_str:
+            dt = parse_duration(duration_str)
+            expires_at = dt.isoformat() if dt else None
+            
+        add_to_blacklist(
+            user_id=target_id,
+            nickname=nickname,
+            static_id=static_id,
+            reason=reason,
+            added_by_id=interaction.user.id,
+            added_by_name=str(interaction.user),
+            expires_at=expires_at
+        )
+        
+        if settings.blacklist_channel_id:
+            bl_ch = interaction.guild.get_channel(settings.blacklist_channel_id)
+            if bl_ch:
+                pings = " ".join([f"<@&{r}>" for r in settings.blacklist_ping_roles])
+                bl_embed = disnake.Embed(title="Занесение в ЧС (Кадровый Аудит)", color=disnake.Color.red())
+                bl_embed.add_field(name="Пользователь", value=f"<@{target_id}> (`{target_id}`)", inline=False)
+                bl_embed.add_field(name="Причина", value=reason, inline=False)
+                bl_embed.add_field(name="Срок", value=duration_display, inline=False)
+                bl_embed.add_field(name="Инициатор", value=interaction.user.mention, inline=False)
+                try:
+                    kwargs = {"embed": bl_embed}
+                    if pings:
+                        kwargs["content"] = pings
+                    await bl_ch.send(**kwargs)
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление в ЧС: {e}")
+                    
+        await interaction.followup.send(components=[v2_msg(f"Пользователь <@{target_id}> занесен в ЧС.")], ephemeral=True)
+
+
+class AuditBlacklistRemoveModal(disnake.ui.Modal):
+    def __init__(self):
+        components = [
+            disnake.ui.TextInput(
+                label="Discord ID пользователя",
+                custom_id="target_id",
+                required=True,
+                max_length=25
+            ),
+            disnake.ui.TextInput(
+                label="Причина вынесения",
+                custom_id="reason",
+                required=True,
+                max_length=150
+            )
+        ]
+        super().__init__(title="Вынесение из ЧС", components=components)
+        
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            target_id = int(interaction.text_values["target_id"].strip())
+        except ValueError:
+            await interaction.followup.send(components=[v2_msg("Неверный формат Discord ID.")], ephemeral=True)
+            return
+            
+        reason = interaction.text_values["reason"].strip()
+        
+        from database import is_blacklisted, remove_from_blacklist
+        
+        if not is_blacklisted(target_id):
+            await interaction.followup.send(components=[v2_msg(f"Пользователь <@{target_id}> не состоит в ЧС.")], ephemeral=True)
+            return
+            
+        remove_from_blacklist(target_id)
+        
+        if settings.blacklist_channel_id:
+            bl_ch = interaction.guild.get_channel(settings.blacklist_channel_id)
+            if bl_ch:
+                bl_embed = disnake.Embed(title="Вынесение из ЧС (Кадровый Аудит)", color=disnake.Color.green())
+                bl_embed.add_field(name="Пользователь", value=f"<@{target_id}> (`{target_id}`)", inline=False)
+                bl_embed.add_field(name="Причина вынесения", value=reason, inline=False)
+                bl_embed.add_field(name="Инициатор", value=interaction.user.mention, inline=False)
+                try:
+                    await bl_ch.send(embed=bl_embed)
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление о снятии ЧС: {e}")
+                    
+        await interaction.followup.send(components=[v2_msg(f"Пользователь <@{target_id}> вынесен из ЧС.")], ephemeral=True)
+
 class AuditActionView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -901,12 +1047,21 @@ class AuditActionView(disnake.ui.View):
             disnake.SelectOption(label="Понизить в звании", value="Demote", description="Понижение в звании"),
             disnake.SelectOption(label="Повысить в звании", value="Promote", description="Повышение в звании"),
             disnake.SelectOption(label="Перевести", value="Transfer", description="Перевод в другой отдел"),
+            disnake.SelectOption(label="Занести в ЧС", value="BlacklistAdd", description="Внесение в чёрный список"),
+            disnake.SelectOption(label="Вынести из ЧС", value="BlacklistRemove", description="Вынесение из чёрного списка"),
         ],
         custom_id="audit_action_select"
     )
     async def select_callback(self, select: disnake.ui.Select, interaction: disnake.MessageInteraction):
-        await interaction.response.defer(ephemeral=True)
         selected_value = select.values[0]
+        if selected_value == "BlacklistAdd":
+            await interaction.response.send_modal(AuditBlacklistAddModal())
+            return
+        elif selected_value == "BlacklistRemove":
+            await interaction.response.send_modal(AuditBlacklistRemoveModal())
+            return
+            
+        await interaction.response.defer(ephemeral=True)
         view = None
         text = ""
         if selected_value == "Accept":
