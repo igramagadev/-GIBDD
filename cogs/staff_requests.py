@@ -349,6 +349,40 @@ class StaffRequestApprovalView(disnake.ui.View):
             )
             if user_db:
                 add_or_update_user(target_id, user_db["nickname"], static_id, new_rank, "active")
+
+            # Logging to battalion assignment channel
+            assigned_dept = None
+            for dept_name, role_id in settings.department_role_ids.items():
+                r = interaction.guild.get_role(role_id)
+                if r and r in target.roles:
+                    assigned_dept = dept_name
+                    break
+            
+            if assigned_dept and "батальон" in assigned_dept.lower():
+                com_1, dep_1 = settings.cmdr_1_role_id, settings.dep_cmdr_1_role_id
+                com_2, dep_2 = settings.cmdr_2_role_id, settings.dep_cmdr_2_role_id
+                com_3, dep_3 = settings.cmdr_3_role_id, settings.dep_cmdr_3_role_id
+                pings = ""
+                if "1-й" in assigned_dept: pings = f"<@&{com_1}> <@&{dep_1}>"
+                elif "2-й" in assigned_dept: pings = f"<@&{com_2}> <@&{dep_2}>"
+                elif "3-й" in assigned_dept: pings = f"<@&{com_3}> <@&{dep_3}>"
+                
+                if pings:
+                    dept_embed = disnake.Embed(
+                        title="Зачисление в батальон (По Рапорту)",
+                        color=disnake.Color(0x2C2F33)
+                    )
+                    dept_embed.add_field(name="Сотрудник", value=target.mention, inline=False)
+                    dept_embed.add_field(name="Статик", value=static_id, inline=False)
+                    dept_embed.add_field(name="Отдел", value=assigned_dept, inline=False)
+                    try:
+                        if settings.battalion_assignment_channel_id:
+                            ch = interaction.guild.get_channel(settings.battalion_assignment_channel_id)
+                            if ch:
+                                await ch.send(content=pings, embed=dept_embed)
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление о зачислении: {e}")
+
             asyncio.create_task(update_cpps_roster(interaction.guild))
             embed.color = disnake.Color.green()
             embed.add_field(name="Статус", value=f"✅ Одобрено {interaction.user.mention}")
@@ -373,4 +407,10 @@ class StaffRequestsCog(commands.Cog):
 
 def setup(bot: commands.Bot):
     bot.add_cog(StaffRequestsCog(bot))
+    bot.add_view(StaffRequestUserSelectView())
+    bot.add_view(StaffRequestActionSelectView())
+    # Note: StaffRequestRankSelectView requires valid_ranks, so we can't register it globally without arguments.
+    # However, since it is sent ephemerally during an active interaction flow, Discord will track it until restart.
+    # To fully prevent timeout on Rank select, we would need persistent storage or custom id parsing,
+    # but the primary timeout is usually on UserSelect or ActionSelect.
     bot.add_view(StaffRequestApprovalView())

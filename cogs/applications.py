@@ -369,42 +369,70 @@ class ApplicationActionView(disnake.ui.View):
                     ephemeral=True,
                 )
                 return
+
             bot_member = guild.get_member(interaction.client.user.id)
             errors = []
             issued_roles = []
             removed_roles_list = []
-            rank_role = find_rank_role(guild, rank)
-            if not rank_role:
-                view = ApplicationRoleSelectView(
-                    app_id=app_id,
-                    target_id=target.id,
-                    performer_id=member.id,
-                    interaction_message=interaction.message,
-                    app_data=app
-                )
-                action_row = disnake.ui.ActionRow(*view.children)
-                container = disnake.ui.Container(
-                    disnake.ui.TextDisplay(f"Роль звания '{rank}' не найдена.\nПожалуйста, выберите роли для выдачи вручную:"),
-                    action_row,
-                    accent_colour=disnake.Colour(0x2C2F33)
-                )
-                msg = await interaction.followup.send(components=[container], ephemeral=True, wait=True)
-                interaction.bot._connection.store_view(view, msg.id)
-                return
             from utils.helpers import sync_user_roles_and_nickname
-            new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member, nickname_override=nickname)
-            issued_roles.extend(new_issued)
-            removed_roles_list.extend(new_removed)
-            errors.extend(new_errors)
+
+            is_transfer = method.strip().lower() in ("перевод", "восстановление")
+            
+            if is_transfer and rank.strip().lower() not in ("рядовой", "младший сержант"):
+                # Re-certification logic
+                new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(
+                    target, guild, "Рядовой", bot_member, nickname_override=f"Переаттестация | {nickname}"
+                )
+                issued_roles.extend(new_issued)
+                removed_roles_list.extend(new_removed)
+                errors.extend(new_errors)
+                
+                recert_role = guild.get_role(settings.recertification_role_id)
+                if recert_role and recert_role not in target.roles:
+                    try:
+                        await target.add_roles(recert_role)
+                        issued_roles.append(recert_role.name)
+                    except disnake.HTTPException:
+                        errors.append("Не удалось выдать роль Переаттестация")
+                
+                # Save as Переаттестация in DB
+                add_or_update_user(target.id, nickname, static_id, "Переаттестация", "active")
+                action_text = "Принять (на Переаттестацию)"
+                log_rank = "Переаттестация"
+            else:
+                # Normal logic
+                rank_role = find_rank_role(guild, rank)
+                if not rank_role:
+                    view = ApplicationRoleSelectView(
+                        app_id=app_id, target_id=target.id, performer_id=member.id,
+                        interaction_message=interaction.message, app_data=app
+                    )
+                    action_row = disnake.ui.ActionRow(*view.children)
+                    container = disnake.ui.Container(
+                        disnake.ui.TextDisplay(f"Роль звания '{rank}' не найдена.\nПожалуйста, выберите роли для выдачи вручную:"),
+                        action_row, accent_colour=disnake.Colour(0x2C2F33)
+                    )
+                    msg = await interaction.followup.send(components=[container], ephemeral=True, wait=True)
+                    interaction.bot._connection.store_view(view, msg.id)
+                    return
+                
+                new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member, nickname_override=nickname)
+                issued_roles.extend(new_issued)
+                removed_roles_list.extend(new_removed)
+                errors.extend(new_errors)
+                add_or_update_user(target.id, nickname, static_id, rank, "active")
+                action_text = "Принять"
+                log_rank = rank
+
             update_application_status(app_id, "issued", member.id, str(member))
-            add_or_update_user(target.id, nickname, static_id, rank, "active")
+            
             add_audit_record(
-                action="Принять",
+                action=action_text,
                 target_user_id=target.id,
                 target_user_name=str(target),
                 target_static_id=static_id,
-                target_rank=rank,
-                target_position="Академия ГИБДД" if rank.lower() in ("рядовой", "младший сержант") else "",
+                target_rank=log_rank,
+                target_position="Академия ГИБДД" if log_rank.lower() in ("рядовой", "младший сержант", "переаттестация") else "",
                 method=method,
                 reason=f"Одобрение заявки на роль (#{app_id})",
                 performed_by_id=member.id,
@@ -418,7 +446,7 @@ class ApplicationActionView(disnake.ui.View):
                     guild,
                     build_audit_container(
                         "принимает", member, target, static_id,
-                        new_rank=rank, reason=f"Одобрение заявки на роль (#{app_id})",
+                        new_rank=log_rank, reason=f"Одобрение заявки на роль (#{app_id})",
                         issued_roles=", ".join(issued_roles) if issued_roles else None,
                         removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
                     )

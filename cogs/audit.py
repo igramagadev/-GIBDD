@@ -543,10 +543,16 @@ class AuditPromoteDemoteReasonModal(disnake.ui.Modal):
                                 await ch.send(content=pings, embed=embed)
                     except Exception as e:
                         logger.error(f"Не удалось отправить уведомление о зачислении: {e}")
+
+            from utils.roster_generator import update_cpps_roster
+            import asyncio
+            asyncio.create_task(update_cpps_roster(interaction.guild))
+
         response = f"{target.mention}: {old_rank} → {new_rank}"
         if errors:
             response += f"\nОшибки: {', '.join(errors)}"
         await interaction.followup.send(components=[v2_msg(response)], ephemeral=True)
+
 class AuditDemoteUserSelectView(disnake.ui.View):
     def __init__(self):
         super().__init__(timeout=None)

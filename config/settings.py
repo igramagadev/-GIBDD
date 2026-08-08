@@ -149,6 +149,7 @@ class Settings:
     base_role_id: int = field(default_factory=lambda: _int_env("BASE_ROLE_ID", 0))
     cadet_role_id: int = field(default_factory=lambda: _int_env("CADET_ROLE_ID", 0))
     fired_role_id: int = field(default_factory=lambda: _int_env("FIRED_ROLE_ID", 0))
+    recertification_role_id: int = field(default_factory=lambda: _int_env("RECERTIFICATION_ROLE_ID", 0))
     
     divider_position_id: int = field(default_factory=lambda: _int_env("DIVIDER_POSITION_ID", 0))
     divider_department_id: int = field(default_factory=lambda: _int_env("DIVIDER_DEPARTMENT_ID", 0))
@@ -212,8 +213,14 @@ class Settings:
             warnings.append("BASE_ROLE_ID не задан")
         if self.cadet_role_id == 0:
             warnings.append("CADET_ROLE_ID не задан")
+        if self.recertification_role_id == 0:
+            warnings.append("RECERTIFICATION_ROLE_ID не задан")
         if self.ss_role_id == 0:
             warnings.append("SS_ROLE_ID не задан")
         return warnings
+
+    def __post_init__(self):
+        if self.recertification_role_id and self.recertification_role_id not in self.roles_to_cleanup_ids:
+            self.roles_to_cleanup_ids.append(self.recertification_role_id)
 
 settings = Settings()
