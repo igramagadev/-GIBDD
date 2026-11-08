@@ -217,6 +217,25 @@ class StaffRequestFireModal(disnake.ui.Modal):
         if bl_decision in ("да", "yes", "+", "y", "д", "da"):
             want_bl = True
         await _submit_request(interaction, reason, want_bl, bl_duration)
+def _component_texts(components) -> list[str]:
+    texts = []
+    for component in components or []:
+        content = getattr(component, "content", None)
+        if isinstance(content, str):
+            texts.append(content)
+        nested = getattr(component, "children", None)
+        if nested is None:
+            nested = getattr(component, "components", None)
+        if nested:
+            texts.extend(_component_texts(nested))
+    return texts
+
+def _report_author_mention(message) -> str:
+    for text in _component_texts(getattr(message, "components", None)):
+        if "Подал рапорт:" in text:
+            return text.split("Подал рапорт:", 1)[1].strip()
+    return ""
+
 def build_request_container(
     target_mention: str,
     action: str,
@@ -307,7 +326,9 @@ async def _submit_request(interaction: disnake.ModalInteraction, reason: str, wa
         old_rank=old_rank,
         new_rank=new_rank,
         want_bl=want_bl,
-        bl_duration=bl_duration
+        bl_duration=bl_duration,
+        submitter_id=interaction.user.id,
+        submitter_mention=interaction.user.mention,
     )
     if not saved:
         await interaction.followup.send(
@@ -488,6 +509,7 @@ class StaffRequestApprovalView(disnake.ui.View):
             )
             from cogs.audit import build_audit_container, post_audit_container
             action_verb = "повышает" if action == "Promote" else "понижает"
+            submitted_by = (req.get("submitter_mention") or "").strip() or _report_author_mention(interaction.message)
             await post_audit_container(
                 interaction.guild,
                 build_audit_container(
@@ -500,6 +522,7 @@ class StaffRequestApprovalView(disnake.ui.View):
                     reason=reason,
                     issued_roles=", ".join(issued_roles) if issued_roles else None,
                     removed_roles=", ".join(removed_roles) if removed_roles else None,
+                    submitted_by=submitted_by or None,
                 ),
             )
             

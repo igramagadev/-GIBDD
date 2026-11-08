@@ -71,7 +71,8 @@ async def post_audit_container(guild, container):
 def build_audit_container(action_verb, performer, target, static_id,
                           old_rank=None, new_rank=None, reason=None,
                           issued_roles=None, removed_roles=None,
-                          old_department=None, new_department=None):
+                          old_department=None, new_department=None,
+                          submitted_by: str | None = None):
     action_title_map = {
         "принимает": "Принятие на службу",
         "увольняет": "Увольнение со службы",
@@ -85,6 +86,8 @@ def build_audit_container(action_verb, performer, target, static_id,
     lines = []
     lines.append(f"**Действие**: {action_title}")
     lines.append(f"**Исполнитель**: {performer.mention} ({performer.id})")
+    if submitted_by:
+        lines.append(f"**Подал рапорт**: {submitted_by}")
     target_val = f"{target.mention} ({target.id})"
     if static_id:
         target_val += f" | Static ID: `{static_id}`"

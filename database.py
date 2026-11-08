@@ -97,6 +97,14 @@ def init_db() -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    for column, column_type in (
+        ("submitter_id", "INTEGER"),
+        ("submitter_mention", "TEXT"),
+    ):
+        try:
+            cursor.execute(f"ALTER TABLE staff_requests ADD COLUMN {column} {column_type}")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
     conn.close()
@@ -438,18 +446,21 @@ def get_last_promotion(target_user_id: int) -> dict | None:
 
 def add_staff_request(*, message_id: int, target_id: int, target_mention: str,
                       action: str, reason: str, old_rank: str, new_rank: str,
-                      want_bl: bool | None, bl_duration: str | None) -> int:
+                      want_bl: bool | None, bl_duration: str | None,
+                      submitter_id: int = 0, submitter_mention: str = "") -> int:
     conn = _connect()
     try:
         cursor = conn.execute(
             """
             INSERT INTO staff_requests
                 (message_id, target_id, target_mention, action, reason,
-                 old_rank, new_rank, want_bl, bl_duration, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 old_rank, new_rank, want_bl, bl_duration, status,
+                 submitter_id, submitter_mention)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (message_id, target_id, target_mention, action, reason,
-             old_rank, new_rank or "", 1 if want_bl else 0, bl_duration or ""),
+             old_rank, new_rank or "", 1 if want_bl else 0, bl_duration or "",
+             submitter_id, submitter_mention),
         )
         conn.commit()
         return cursor.lastrowid
