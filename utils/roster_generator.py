@@ -331,21 +331,49 @@ def _blacklist_line(user_id: int, nickname: str, static_id: str, reason: str, ex
     return f"- <@{user_id}> · **{name}** — `{static}` · {_format_blacklist_until(expires_at)} · {why}"
 
 
+_BLACKLIST_PAGE_LIMIT = 3700
+
+
+def _blacklist_pages(lines: list[str]) -> list[list[str]]:
+    if not lines:
+        return [[]]
+    pages: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for line in lines:
+        piece = len(line) + 1
+        if current and size + piece > _BLACKLIST_PAGE_LIMIT:
+            pages.append(current)
+            current = [line]
+            size = piece
+        else:
+            current.append(line)
+            size += piece
+    if current:
+        pages.append(current)
+    return pages
+
+
 def build_blacklist_roster_components(lines: list[str]):
     import disnake
-    body = "\n".join(lines) if lines else "- никого"
-    blocks = [
-        disnake.ui.TextDisplay(f"# Чёрный список\nЧеловек в списке: **{len(lines)}**"),
-        disnake.ui.Separator(divider=True, spacing=disnake.SeparatorSpacing.small),
-    ]
-    for chunk in _split_text(body):
-        blocks.append(disnake.ui.TextDisplay(chunk))
-    return [
-        disnake.ui.Container(
-            *blocks,
-            accent_colour=disnake.Colour(0x2C2F33),
-        )
-    ]
+    pages = _blacklist_pages(lines)
+    page_count = len(pages)
+    messages = []
+    for index, page_lines in enumerate(pages, start=1):
+        if page_count == 1:
+            header = f"# Чёрный список\nЧеловек в списке: **{len(lines)}**"
+        else:
+            header = f"# Чёрный список\nЧеловек в списке: **{len(lines)}** · {index}/{page_count}"
+        body = "\n".join(page_lines) if page_lines else "- никого"
+        messages.append([
+            disnake.ui.Container(
+                disnake.ui.TextDisplay(header),
+                disnake.ui.Separator(divider=True, spacing=disnake.SeparatorSpacing.small),
+                disnake.ui.TextDisplay(body),
+                accent_colour=disnake.Colour(0x2C2F33),
+            )
+        ])
+    return messages
 
 
 async def update_blacklist_roster(guild):
@@ -377,30 +405,22 @@ async def update_blacklist_roster(guild):
     dated.sort(key=lambda item: item[0])
     permanent.sort(key=lambda item: item[0])
     lines = [line for _, line in dated] + [line for _, line in permanent]
-    components = build_blacklist_roster_components(lines)
+    pages = build_blacklist_roster_components(lines)
     mentions = disnake.AllowedMentions.none()
     try:
-        latest = None
-        stale = []
-        async for message in channel.history(limit=30):
+        existing = []
+        async for message in channel.history(limit=50):
             if message.author.id != guild.me.id:
                 continue
-            if not getattr(message.flags, "is_components_v2", False):
-                continue
-            if latest is None:
-                latest = message
+            if getattr(message.flags, "is_components_v2", False):
+                existing.append(message)
+        existing.reverse()
+        for index, components in enumerate(pages):
+            if index < len(existing):
+                await existing[index].edit(components=components, allowed_mentions=mentions)
             else:
-                stale.append(message)
-        if latest is not None:
-            try:
-                await latest.edit(components=components, allowed_mentions=mentions)
-            except Exception:
-                logger.exception("Не удалось обновить чёрный список, отправляю заново")
                 await channel.send(components=components, allowed_mentions=mentions)
-                stale.append(latest)
-        else:
-            await channel.send(components=components, allowed_mentions=mentions)
-        for message in stale:
+        for message in existing[len(pages):]:
             try:
                 await message.delete()
             except Exception:
