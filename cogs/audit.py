@@ -25,6 +25,7 @@ from utils.helpers import (
     member_department,
     separate_battalion_pings,
     employee_refusal,
+    promotion_cooldown_notice,
 )
 from utils.panel_init import send_v2_panel
 logger = logging.getLogger("bot.audit")
@@ -53,6 +54,11 @@ def _cleanup_audit_sessions() -> None:
         del AUDIT_SESSIONS[key]
 async def post_audit_container(guild, container):
     channel = guild.get_channel(settings.audit_log_channel_id)
+    if channel is None and settings.audit_log_channel_id:
+        try:
+            channel = await guild.fetch_channel(settings.audit_log_channel_id)
+        except Exception:
+            channel = None
     if not channel:
         logger.warning("Канал аудита %s не найден", settings.audit_log_channel_id)
         return False
@@ -712,13 +718,11 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             return
         
         from database import get_last_promotion_time
-        from datetime import datetime, timezone, timedelta
         
         current_rank = user_db.get("rank", "Не указано") or "Не указано"
         static_id = user_db.get("static_id", "Не указан") or "Не указан"
         nickname = user_db.get("nickname", target.display_name) or target.display_name
 
-        current_rank_lower = current_rank.strip().lower()
         target_idx = -1
         if current_rank in settings.ranks:
             target_idx = settings.ranks.index(current_rank)
@@ -748,21 +752,8 @@ class AuditPromoteUserSelectView(disnake.ui.View):
             return
 
         last_promo = get_last_promotion_time(target.id)
-        cd_warning = ""
-        on_cooldown = False
-        if last_promo and current_rank_lower != "рядовой":
-            msk_tz = timezone(timedelta(hours=3))
-            if last_promo.tzinfo is None:
-                last_promo = last_promo.replace(tzinfo=datetime.now().astimezone().tzinfo)
-            last_promo_msk = last_promo.astimezone(msk_tz)
-            now_msk = datetime.now(timezone.utc).astimezone(msk_tz)
-            next_midnight_msk = (last_promo_msk + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            if now_msk < next_midnight_msk:
-                diff = next_midnight_msk - now_msk
-                hours = int(diff.total_seconds() // 3600)
-                mins = int((diff.total_seconds() % 3600) // 60)
-                on_cooldown = True
-                cd_warning = f"\n**ВНИМАНИЕ: Система 1КД!** Сотрудник уже повышался сегодня. КД спадёт в 00:00 МСК. Осталось: **{hours}ч {mins}м**."
+        notice = promotion_cooldown_notice(target.id, current_rank)
+        cd_warning = f"\n\n{notice}" if notice else ""
 
         last_promo_str = "—"
         if last_promo:
@@ -823,8 +814,12 @@ class AuditPromoteConfirmView(disnake.ui.View):
         needs_static = session.get("needs_static", self.needs_static)
         rank_view = AuditSelectRankView("Promote", valid_ranks, needs_static)
         action_row = disnake.ui.ActionRow(*rank_view.children)
+        prompt = "### Выберите новое звание"
+        notice = promotion_cooldown_notice(session["target_id"], session.get("old_rank", ""))
+        if notice:
+            prompt = f"{prompt}\n\n{notice}"
         card = disnake.ui.Container(
-            disnake.ui.TextDisplay("Выберите новое звание для повышения:"),
+            disnake.ui.TextDisplay(prompt),
             action_row,
             accent_colour=disnake.Colour(0x2C2F33)
         )

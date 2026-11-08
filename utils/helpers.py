@@ -148,6 +148,37 @@ def has_staff_role(member: disnake.Member, guild: disnake.Guild) -> bool:
         return False
     return staff_role in member.roles
 
+def promotion_cooldown_deadline(last_promo: datetime.datetime, rank: str, now: datetime.datetime | None = None) -> datetime.datetime | None:
+    if (rank or "").strip().casefold() == "рядовой":
+        return None
+    msk = datetime.timezone(datetime.timedelta(hours=3))
+    if last_promo.tzinfo is None:
+        last_promo = last_promo.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+    current = now or datetime.datetime.now(msk)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+    last_msk = last_promo.astimezone(msk)
+    now_msk = current.astimezone(msk)
+    midnight = (last_msk + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    if now_msk >= midnight:
+        return None
+    return midnight
+
+def promotion_cooldown_notice(user_id: int, rank: str) -> str:
+    from database import get_last_promotion_time
+    last_promo = get_last_promotion_time(user_id)
+    if last_promo is None:
+        return ""
+    deadline = promotion_cooldown_deadline(last_promo, rank)
+    if deadline is None:
+        return ""
+    stamp = int(deadline.timestamp())
+    return (
+        "### Кулдаун\n"
+        "У сотрудника действует **1КД**.\n"
+        f"Повысить можно после полуночи, <t:{stamp}:t> МСК · <t:{stamp}:R>."
+    )
+
 def employee_refusal(member, user_db: dict | None, *, self_target: bool) -> str | None:
     employed = bool(user_db) and (user_db.get("status") or "") == "active"
     roles = getattr(member, "roles", ())

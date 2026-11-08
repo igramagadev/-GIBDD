@@ -15,6 +15,7 @@ from utils.helpers import (
     parse_duration,
     separate_battalion_pings,
     employee_refusal,
+    promotion_cooldown_notice,
 )
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,12 @@ class StaffRequestActionSelectView(disnake.ui.View):
             if not valid_ranks:
                 await interaction.response.send_message(components=[v2_msg("Нет доступных званий.")], ephemeral=True)
                 return
-            await _ephemeral_v2(interaction, "Выберите новое звание:", StaffRequestRankSelectView(valid_ranks))
+            prompt = "### Выберите новое звание"
+            if action == "Promote":
+                notice = promotion_cooldown_notice(session["target_id"], current_rank)
+                if notice:
+                    prompt = f"{prompt}\n\n{notice}"
+            await _ephemeral_v2(interaction, prompt, StaffRequestRankSelectView(valid_ranks))
 class StaffRequestRankSelectView(disnake.ui.View):
     def __init__(self, valid_ranks: list[str]):
         super().__init__(timeout=None)
@@ -221,7 +227,8 @@ def build_request_container(
     bl_duration: str,
     status_text: str,
     action_row: disnake.ui.ActionRow = None,
-    performer_mention: str = ""
+    performer_mention: str = "",
+    notice: str = "",
 ) -> disnake.ui.Container:
     if action == "Fire":
         title = "Рапорт на увольнение"
@@ -240,6 +247,9 @@ def build_request_container(
     ]
     if performer_mention:
         components.append(disnake.ui.TextDisplay(f"**Подал рапорт:** {performer_mention}"))
+    if notice:
+        components.append(disnake.ui.Separator())
+        components.append(disnake.ui.TextDisplay(notice))
     components.append(disnake.ui.Separator())
     components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
     if action_row:
@@ -269,6 +279,9 @@ async def _submit_request(interaction: disnake.ModalInteraction, reason: str, wa
     
     view = StaffRequestApprovalView()
     action_row = disnake.ui.ActionRow(*view.children)
+    notice = ""
+    if action == "Promote":
+        notice = promotion_cooldown_notice(target_id, old_rank)
     
     container = build_request_container(
         target_mention=target_mention,
@@ -280,7 +293,8 @@ async def _submit_request(interaction: disnake.ModalInteraction, reason: str, wa
         bl_duration=bl_duration,
         status_text="Ожидает рассмотрения",
         action_row=action_row,
-        performer_mention=interaction.user.mention
+        performer_mention=interaction.user.mention,
+        notice=notice,
     )
     msg = await channel.send(components=[container])
     
@@ -471,6 +485,22 @@ class StaffRequestApprovalView(disnake.ui.View):
                 performed_by_name=str(interaction.user),
                 issued_roles=", ".join(issued_roles),
                 removed_roles=", ".join(removed_roles)
+            )
+            from cogs.audit import build_audit_container, post_audit_container
+            action_verb = "повышает" if action == "Promote" else "понижает"
+            await post_audit_container(
+                interaction.guild,
+                build_audit_container(
+                    action_verb,
+                    interaction.user,
+                    target,
+                    static_id,
+                    old_rank=old_rank,
+                    new_rank=new_rank,
+                    reason=reason,
+                    issued_roles=", ".join(issued_roles) if issued_roles else None,
+                    removed_roles=", ".join(removed_roles) if removed_roles else None,
+                ),
             )
             
             if user_db:
