@@ -1,0 +1,1374 @@
+from config import settings
+import logging
+from datetime import datetime
+import disnake
+from disnake.ext import commands
+from config.settings import settings
+from database import (
+    add_application,
+    update_application_status,
+    get_application_by_message_id,
+    add_audit_record,
+    get_user,
+    add_or_update_user,
+    set_user_status,
+    is_blacklisted,
+)
+from utils.helpers import (
+    clean_role_name,
+    can_manage_role,
+    can_manage_applications,
+    can_manage_resignations,
+    send_dm,
+    find_rank_role,
+    v2_msg,
+    get_cached_val,
+    set_cached_val,
+    get_staff_title,
+    validate_docs_url,
+    is_protected_role,
+    is_ss,
+    get_rank_index,
+    get_member_rank_index,
+    employee_refusal,
+)
+from utils.interaction_guard import interaction_guard
+from utils.panel_init import send_v2_panel
+logger = logging.getLogger("bot.applications")
+
+def _application_docs(app: tuple) -> str:
+    if len(app) > 11 and isinstance(app[11], str):
+        return app[11]
+    return ""
+
+def _stored_application_reason(app: tuple) -> str:
+    if len(app) > 12 and isinstance(app[12], str) and app[12].strip():
+        return app[12].strip()
+    return ""
+
+def _reason_from_message(message) -> str:
+    chunks: list[str] = []
+
+    def walk(items) -> None:
+        for item in items or []:
+            content = getattr(item, "content", None)
+            if isinstance(content, str):
+                chunks.append(content)
+            walk(getattr(item, "children", None))
+            walk(getattr(item, "components", None))
+
+    walk(getattr(message, "components", None))
+    text = "\n".join(chunks)
+    marker = "по причине: "
+    if marker not in text:
+        return ""
+    tail = text.split(marker, 1)[1]
+    for stop in ("\n\nДата:", "\nДата:"):
+        if stop in tail:
+            tail = tail.split(stop, 1)[0]
+            break
+    return tail.strip().rstrip(".")
+def build_application_container(
+    app_id: int | str,
+    user: disnake.Member | disnake.User,
+    nickname: str,
+    static_id: str,
+    method: str,
+    rank: str,
+    status_text: str,
+    docs: str = "",
+    action_row: disnake.ui.ActionRow = None
+) -> disnake.ui.Container:
+    joined_at = getattr(user, "joined_at", None)
+    if joined_at:
+        joined_timestamp = int(joined_at.timestamp())
+        joined_str = f"<t:{joined_timestamp}:f> (<t:{joined_timestamp}:R>)"
+    else:
+        joined_str = "Неизвестно"
+    profile_text = (
+        f"**Пользователь:** {user.mention}\n"
+        f"**ID:** `{user.id}`\n"
+        f"**Присоединился:** {joined_str}"
+    )
+    title = f"Заявка на роль #{app_id}" if app_id else "Новая заявка на роль"
+    components = [
+        disnake.ui.TextDisplay(f"### {title}"),
+        disnake.ui.Section(
+            disnake.ui.TextDisplay(profile_text),
+            accessory=disnake.ui.Thumbnail(media=user.display_avatar.url)
+        ),
+        disnake.ui.Separator()
+    ]
+    fields_text = (
+        f"**Никнейм (игровой ник):**\n```\n{nickname}\n```\n"
+        f"**Static ID:**\n```\n{static_id}\n```\n"
+        f"**Способ подачи:**\n```\n{method}\n```\n"
+        f"**Звание:**\n```\n{rank}\n```"
+    )
+    if docs:
+        fields_text += f"\n\n**Ссылка на документы:**\n{docs}"
+    components.append(disnake.ui.TextDisplay(fields_text))
+    components.append(disnake.ui.Separator())
+    components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
+    if action_row:
+        components.append(action_row)
+    return disnake.ui.Container(*components, accent_colour=disnake.Colour(0x2C2F33))
+def build_resignation_container(
+    app_id: int | str,
+    user: disnake.Member | disnake.User,
+    nickname: str,
+    static_id: str,
+    rank: str,
+    reason: str,
+    status_text: str,
+    guild: disnake.Guild = None,
+    action_row: disnake.ui.ActionRow = None
+) -> disnake.ui.Container:
+    joined_at = getattr(user, "joined_at", None)
+    if joined_at:
+        joined_timestamp = int(joined_at.timestamp())
+        joined_str = f"<t:{joined_timestamp}:f> (<t:{joined_timestamp}:R>)"
+    else:
+        joined_str = "Неизвестно"
+    profile_text = (
+        f"**Пользователь:** {user.mention}\n"
+        f"**ID:** `{user.id}`\n"
+        f"**Присоединился:** {joined_str}"
+    )
+    title = f"Заявление на увольнение #{app_id}" if app_id else "Заявление на увольнение"
+    ss_ping = f"<@&{settings.ss_role_id}>" if settings.ss_role_id else ""
+    date_str = datetime.now().strftime("%d.%m.%Y")
+    statement_text = (
+        "Начальнику ГИБДД, генералу полиции РФ\n"
+        "Демидову Александру Валерьевичу\n"
+        f"{ss_ping}\n\n"
+        f"от {rank} полиции {nickname}\n\n"
+        "**Заявление**\n\n"
+        f"Я, {nickname}, находящийся в звании {rank} полиции, служебное удостоверение № {static_id} "
+        f"прошу Вас рассмотреть моё заявление на увольнение из рядов Управления Государственной Инспекции Безопасности "
+        f"Дорожного Движения по причине: {reason}.\n\n"
+        f"Дата: {date_str}"
+    )
+    components = [
+        disnake.ui.TextDisplay(f"### {title}"),
+        disnake.ui.Section(
+            disnake.ui.TextDisplay(profile_text),
+            accessory=disnake.ui.Thumbnail(media=user.display_avatar.url)
+        ),
+        disnake.ui.Separator(),
+        disnake.ui.TextDisplay(statement_text)
+    ]
+    components.append(disnake.ui.Separator())
+    components.append(disnake.ui.TextDisplay(f"**Статус:** {status_text}"))
+    if action_row:
+        components.append(action_row)
+    return disnake.ui.Container(*components, accent_colour=disnake.Colour(0x2C2F33))
+class RejectionReasonModal(disnake.ui.Modal):
+    def __init__(self, app_data, interaction_message):
+        self.app_data = app_data
+        self.interaction_message = interaction_message
+        components = [
+            disnake.ui.TextInput(
+                label="Причина отклонения",
+                custom_id="reason",
+                placeholder="Укажите причину отклонения заявки",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            )
+        ]
+        super().__init__(title="Причина отклонения", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+        app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = self.app_data
+        reason_val = interaction.text_values["reason"].strip()
+        update_application_status(app_id, "rejected", member.id, str(member))
+        target = guild.get_member(user_id)
+        if not target:
+            try:
+                target = await interaction.client.fetch_user(user_id)
+            except Exception:
+                target = interaction.user
+        docs_url = _application_docs(self.app_data)
+        staff_title = get_staff_title(member, guild)
+        container = build_application_container(
+            app_id=app_id,
+            user=target,
+            nickname=nickname,
+            static_id=static_id,
+            method=method,
+            rank=rank,
+            status_text=f"Отклонено {staff_title}\nПричина: {reason_val}",
+            docs=docs_url
+        )
+        await self.interaction_message.edit(components=[container])
+        logger.info(
+            "ЗАЯВКА ОТКЛОНЕНА | Номер: #%s | Пользователь: %s (%s) | Ник: %s | Static ID: %s | Звание: %s | Способ: %s | Отклонил: %s (ID: %s) | Причина: %s",
+            app_id, user_name, user_id, nickname, static_id, rank, method, member, member.id, reason_val
+        )
+        dm_status = "ЛС закрыты"
+        if target:
+            desc_dm = (
+                f"### Уведомление по заявке #{app_id}\n\n"
+                f"Ваша заявка на роль была **отклонена** {staff_title}.\n"
+                f"> **Причина:** {reason_val}\n"
+                f"> **Сервер:** {guild.name}"
+            )
+            dm_container = disnake.ui.Container(
+                disnake.ui.TextDisplay(desc_dm),
+                accent_colour=disnake.Colour(0x2C2F33)
+            )
+            dm_sent = await send_dm(target, components=[dm_container])
+            if dm_sent:
+                dm_status = "ЛС отправлены"
+        else:
+            dm_status = "Пользователь покинул сервер"
+        await interaction.followup.send(
+            components=[v2_msg(f"Заявка отклонена. Причина: {reason_val}\n{dm_status}")],
+            ephemeral=True,
+        )
+class ApplicationRoleSelectView(disnake.ui.View):
+    def __init__(self, app_id: int, target_id: int, performer_id: int, interaction_message: disnake.Message, app_data: tuple):
+        super().__init__(timeout=300)
+        self.app_id = app_id
+        self.target_id = target_id
+        self.performer_id = performer_id
+        self.interaction_message = interaction_message
+        self.app_data = app_data
+    @disnake.ui.role_select(placeholder="Выберите роли для выдачи...", min_values=1, max_values=10, custom_id="app_manual_role_select")
+    async def select_roles(self, select: disnake.ui.RoleSelect, interaction: disnake.MessageInteraction):
+        if interaction.user.id != self.performer_id:
+            await interaction.response.send_message(components=[v2_msg("Только модератор, одобряющий заявку, может выбрать роли.")], ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+        target = guild.get_member(self.target_id)
+        if not target:
+            await interaction.followup.send(components=[v2_msg("Пользователь покинул сервер.")], ephemeral=True)
+            return
+        app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = self.app_data
+        bot_member = guild.get_member(interaction.client.user.id)
+        errors = []
+        issued_roles = []
+        for role in select.values:
+            if is_protected_role(role):
+                errors.append(f"Роль '{role.name}' защищена и не может быть назначена")
+                logger.warning(
+                    "БЕЗОПАСНОСТЬ | Попытка назначить защищённую роль '%s' (ID: %s) пользователю %s | Исполнитель: %s (ID: %s)",
+                    role.name, role.id, target, member, member.id
+                )
+                continue
+            if role not in target.roles:
+                if can_manage_role(bot_member, role):
+                    try:
+                        await target.add_roles(role)
+                        issued_roles.append(clean_role_name(role.name))
+                    except Exception as exc:
+                        errors.append(f"{role.name}: {exc}")
+                else:
+                    errors.append(f"Роль '{role.name}' выше бота")
+        update_application_status(self.app_id, "issued", member.id, str(member))
+        add_or_update_user(target.id, nickname, static_id, rank, "active")
+        add_audit_record(
+            action="Принять",
+            target_user_id=target.id,
+            target_user_name=str(target),
+            target_static_id=static_id,
+            target_rank=rank,
+            target_position="",
+            method=method,
+            reason=f"Одобрение заявки на роль (#{app_id}) (Ручная выдача)",
+            performed_by_id=member.id,
+            performed_by_name=str(member),
+            issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
+            removed_roles="Нет",
+        )
+        try:
+            from cogs.audit import post_audit_container, build_audit_container
+            await post_audit_container(
+                guild,
+                build_audit_container(
+                    "принимает", member, target, static_id,
+                    new_rank=rank, reason=f"Одобрение заявки на роль (#{app_id}) (Ручная выдача)",
+                    issued_roles=", ".join(issued_roles) if issued_roles else None,
+                )
+            )
+        except ImportError:
+            pass
+        staff_title = get_staff_title(member, guild)
+        status_text = f"Одобрено {staff_title}"
+        if issued_roles:
+            status_text += f"\nВыданные роли: {', '.join(issued_roles)}"
+        if errors:
+            status_text += f"\nОшибки: {', '.join(errors)}"
+        docs_url = _application_docs(self.app_data)
+        new_container = build_application_container(
+            app_id=self.app_id,
+            user=target,
+            nickname=nickname,
+            static_id=static_id,
+            method=method,
+            rank=rank,
+            status_text=status_text,
+            docs=docs_url
+        )
+        await self.interaction_message.edit(components=[new_container])
+        logger.info(
+            "ЗАЯВКА ОДОБРЕНА + РОЛИ ВРУЧНУЮ | Номер: #%s | Пользователь: %s (%s) | Ник: %s | Звание: %s | Одобрил: %s (ID: %s) | Выданные роли: %s",
+            self.app_id, user_name, user_id, nickname, rank, member, member.id, ", ".join(issued_roles) if issued_roles else "Нет"
+        )
+        desc_dm = (
+            f"### Уведомление по заявке #{self.app_id}\n\n"
+            f"Ваша заявка на роль была **одобрена** {staff_title}.\n"
+            f"> **Звание:** {rank}\n"
+            f"> **Выданные роли:** {', '.join(issued_roles) if issued_roles else 'Нет'}"
+        )
+        dm_container = disnake.ui.Container(
+            disnake.ui.TextDisplay(desc_dm),
+            accent_colour=disnake.Colour(0x2C2F33)
+        )
+        dm_sent = await send_dm(target, components=[dm_container])
+        dm_status = "ЛС отправлены" if dm_sent else "ЛС закрыты"
+        response_msg = f"Заявка одобрена! Выбранные роли выданы {target.mention}.\n{dm_status}"
+        if errors:
+            response_msg += f"\nОшибки: {', '.join(errors)}"
+        await interaction.followup.send(components=[v2_msg(response_msg)], ephemeral=True)
+        self.stop()
+class ApplicationActionView(disnake.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="approve_app")
+    async def approve_button(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        await interaction.response.defer(ephemeral=True)
+        async with interaction_guard.lock(interaction.message.id) as acquired:
+            if not acquired:
+                await interaction.followup.send(
+                    components=[v2_msg("Эту заявку уже обрабатывает другой модератор.")],
+                    ephemeral=True,
+                )
+                return
+            guild = interaction.guild
+            member = interaction.user
+            if not can_manage_applications(member):
+                await interaction.followup.send(
+                    components=[v2_msg("Недостаточно прав. ")],
+                    ephemeral=True
+                )
+                return
+            app = get_application_by_message_id(interaction.message.id)
+            if not app:
+                await interaction.followup.send(components=[v2_msg("Заявка не найдена в базе данных.")], ephemeral=True)
+                return
+            app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = app
+            if status != "pending":
+                await interaction.followup.send(components=[v2_msg(f"Заявка уже обработана (статус: {status}).")], ephemeral=True)
+                return
+            if member.id == user_id:
+                await interaction.followup.send(components=[v2_msg("Нельзя одобрять свою собственную заявку.")], ephemeral=True)
+                return
+            if not is_ss(member):
+                approver_rank_idx = get_member_rank_index(member, guild)
+                app_rank_idx = get_rank_index(rank)
+                if app_rank_idx != -1 and approver_rank_idx != -1 and app_rank_idx >= approver_rank_idx:
+                    await interaction.followup.send(
+                        components=[v2_msg(
+                            f"Нельзя одобрять заявку на звание '{rank}' — оно не ниже вашего."
+                        )],
+                        ephemeral=True,
+                    )
+                    return
+            user_db = get_user(user_id)
+            if is_blacklisted(user_id):
+                await interaction.followup.send(
+                    components=[v2_msg("Пользователь в Чёрном Списке! Обработка заблокирована.")],
+                    ephemeral=True
+                )
+                return
+            if user_db and user_db["status"] == "active":
+                await interaction.followup.send(
+                    components=[v2_msg("Данный сотрудник уже трудоустроен!")],
+                    ephemeral=True
+                )
+                return
+            target = guild.get_member(user_id)
+            if not target:
+                await interaction.followup.send(
+                    components=[v2_msg(f"Пользователь с ID {user_id} покинул сервер.")],
+                    ephemeral=True,
+                )
+                return
+
+            bot_member = guild.get_member(interaction.client.user.id)
+            errors = []
+            issued_roles = []
+            removed_roles_list = []
+            from utils.helpers import sync_user_roles_and_nickname
+
+            is_transfer = method.strip().lower() in ("перевод", "восстановление")
+
+            if is_transfer and rank.strip().lower() not in ("рядовой", "младший сержант"):
+                cleanup_ids: set[int] = set(settings.roles_to_cleanup_ids)
+                cleanup_names: set[str] = set(settings.roles_to_cleanup_names)
+                extra_cleanup = {
+                    settings.divider_position_id, settings.divider_department_id,
+                    settings.divider_rank_id, settings.divider_access_id,
+                }
+                extra_cleanup.update(settings.department_role_ids.values())
+                extra_cleanup.update(settings.obsolete_department_role_ids)
+                extra_cleanup.update(settings.ranks_map.values())
+                extra_cleanup.update(settings.position_role_ids.values())
+                extra_cleanup.discard(0)
+
+                for role in list(target.roles):
+                    if role.name == "@everyone":
+                        continue
+                    should_remove = (
+                        role.id in cleanup_ids
+                        or role.name in cleanup_names
+                        or role.id in extra_cleanup
+                        or role.id in (settings.base_role_id, settings.cadet_role_id, settings.fired_role_id)
+                    )
+                    if should_remove and can_manage_role(bot_member, role):
+                        try:
+                            await target.remove_roles(role)
+                            removed_roles_list.append(clean_role_name(role.name))
+                        except Exception as e:
+                            errors.append(f"Снять {role.name}: {e}")
+
+                roles_to_add = []
+
+                base_role = guild.get_role(settings.base_role_id)
+                if base_role and base_role not in target.roles and can_manage_role(bot_member, base_role):
+                    roles_to_add.append(base_role)
+
+                pvt_role = None
+                if settings.ranks_map.get("Рядовой"):
+                    pvt_role = guild.get_role(settings.ranks_map["Рядовой"])
+                if not pvt_role:
+                    pvt_role = disnake.utils.find(lambda r: r.name.lower() == "рядовой", guild.roles)
+                if pvt_role and pvt_role not in target.roles and can_manage_role(bot_member, pvt_role):
+                    roles_to_add.append(pvt_role)
+
+                course1_role = None
+                if settings.position_role_ids.get("1-й курс"):
+                    course1_role = guild.get_role(settings.position_role_ids["1-й курс"])
+                if not course1_role:
+                    course1_role = disnake.utils.find(lambda r: r.name.lower() == "1-й курс", guild.roles)
+                if course1_role and course1_role not in target.roles and can_manage_role(bot_member, course1_role):
+                    roles_to_add.append(course1_role)
+
+                recert_role = guild.get_role(settings.recertification_role_id)
+                if recert_role and recert_role not in target.roles and can_manage_role(bot_member, recert_role):
+                    roles_to_add.append(recert_role)
+
+                if roles_to_add:
+                    try:
+                        await target.add_roles(*roles_to_add)
+                        issued_roles.extend([clean_role_name(r.name) for r in roles_to_add])
+                    except Exception as e:
+                        errors.append(f"Выдать роли: {e}")
+
+                raw_nick = f"Переаттестация | {nickname}"
+                if len(raw_nick) > 32:
+                    available = 32 - len("Переаттестация | ")
+                    raw_nick = f"Переаттестация | {nickname[:available]}"
+                try:
+                    await target.edit(nick=raw_nick)
+                except Exception as e:
+                    errors.append(f"Ник: {e}")
+
+                add_or_update_user(target.id, nickname, static_id, "Переаттестация", "active")
+                action_text = "Принять (на Переаттестацию)"
+                log_rank = "Переаттестация"
+            else:
+                rank_role = find_rank_role(guild, rank)
+                if not rank_role:
+                    view = ApplicationRoleSelectView(
+                        app_id=app_id, target_id=target.id, performer_id=member.id,
+                        interaction_message=interaction.message, app_data=app
+                    )
+                    action_row = disnake.ui.ActionRow(*view.children)
+                    container = disnake.ui.Container(
+                        disnake.ui.TextDisplay(f"Роль звания '{rank}' не найдена.\nПожалуйста, выберите роли для выдачи вручную:"),
+                        action_row, accent_colour=disnake.Colour(0x2C2F33)
+                    )
+                    msg = await interaction.followup.send(components=[container], ephemeral=True, wait=True)
+                    interaction.bot._connection.store_view(view, msg.id)
+                    return
+                
+                new_issued, new_removed, new_errors = await sync_user_roles_and_nickname(target, guild, rank, bot_member, nickname_override=nickname)
+                issued_roles.extend(new_issued)
+                removed_roles_list.extend(new_removed)
+                errors.extend(new_errors)
+                add_or_update_user(target.id, nickname, static_id, rank, "active")
+                action_text = "Принять"
+                log_rank = rank
+
+            update_application_status(app_id, "issued", member.id, str(member))
+            
+            add_audit_record(
+                action=action_text,
+                target_user_id=target.id,
+                target_user_name=str(target),
+                target_static_id=static_id,
+                target_rank=log_rank,
+                target_position="Академия ГИБДД" if log_rank.lower() in ("рядовой", "младший сержант", "переаттестация") else "",
+                method=method,
+                reason=f"Одобрение заявки на роль (#{app_id})",
+                performed_by_id=member.id,
+                performed_by_name=str(member),
+                issued_roles=", ".join(issued_roles) if issued_roles else "Нет",
+                removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
+            )
+            try:
+                from cogs.audit import post_audit_container, build_audit_container
+                await post_audit_container(
+                    guild,
+                    build_audit_container(
+                        "принимает", member, target, static_id,
+                        new_rank=log_rank, reason=f"Одобрение заявки на роль (#{app_id})",
+                        issued_roles=", ".join(issued_roles) if issued_roles else None,
+                        removed_roles=", ".join(removed_roles_list) if removed_roles_list else None,
+                    )
+                )
+            except ImportError:
+                logger.warning("Не удалось импортировать аудит в заявках")
+            staff_title = get_staff_title(member, guild)
+            status_text = f"Одобрено {staff_title}"
+            if issued_roles:
+                status_text += f"\nВыданные роли: {', '.join(issued_roles)}"
+            if removed_roles_list:
+                status_text += f"\nСнятые роли: {', '.join(removed_roles_list)}"
+            if errors:
+                status_text += f"\nОшибки: {', '.join(errors)}"
+            docs_url = _application_docs(app)
+            new_container = build_application_container(
+                app_id=app_id,
+                user=target,
+                nickname=nickname,
+                static_id=static_id,
+                method=method,
+                rank=rank,
+                status_text=status_text,
+                docs=docs_url
+            )
+            await interaction.message.edit(components=[new_container])
+            logger.info(
+                "ЗАЯВКА ОДОБРЕНА + РОЛИ ВЫДАНЫ | Номер: #%s | Пользователь: %s (%s) | Ник: %s | Static ID: %s | Звание: %s | Способ: %s | Одобрил: %s (ID: %s) | Выданные роли: %s",
+                app_id, user_name, user_id, nickname, static_id, rank, method, member, member.id, ", ".join(issued_roles) if issued_roles else "Нет"
+            )
+            desc_dm = (
+                f"### Уведомление по заявке #{app_id}\n\n"
+                f"Ваша заявка на роль была **одобрена** {staff_title}.\n"
+                f"> **Звание:** {rank}\n"
+                f"> **Выданные роли:** {', '.join(issued_roles) if issued_roles else 'Нет'}"
+            )
+            dm_container = disnake.ui.Container(
+                disnake.ui.TextDisplay(desc_dm),
+                accent_colour=disnake.Colour(0x2C2F33)
+            )
+            dm_sent = await send_dm(target, components=[dm_container])
+            dm_status = "ЛС отправлены" if dm_sent else "ЛС закрыты"
+            response_msg = f"Заявка одобрена! Роли выданы {target.mention}.\n{dm_status}"
+            if errors:
+                response_msg += f"\nОшибки: {', '.join(errors)}"
+            await interaction.followup.send(components=[v2_msg(response_msg)], ephemeral=True)
+    @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="reject_app")
+    async def reject_button(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        async with interaction_guard.lock(interaction.message.id) as acquired:
+            if not acquired:
+                await interaction.response.send_message(
+                    components=[v2_msg("Эту заявку уже обрабатывает другой модератор.")],
+                    ephemeral=True,
+                )
+                return
+            member = interaction.user
+            if not can_manage_applications(member):
+                await interaction.response.send_message(
+                    components=[v2_msg("Недостаточно прав. ")],
+                    ephemeral=True
+                )
+                return
+            app = get_application_by_message_id(interaction.message.id)
+            if not app:
+                await interaction.response.send_message(components=[v2_msg("Заявка не найдена.")], ephemeral=True)
+                return
+            _, user_id, _, _, _, _, _, status, *_ = app
+            if status != "pending":
+                await interaction.response.send_message(components=[v2_msg(f"Заявка уже обработана (статус: {status}).")], ephemeral=True)
+                return
+            if member.id == user_id:
+                await interaction.response.send_message(components=[v2_msg("Нельзя отклонять свою собственную заявку.")], ephemeral=True)
+                return
+            modal = RejectionReasonModal(app_data=app, interaction_message=interaction.message)
+            await interaction.response.send_modal(modal)
+class ApplicationModal(disnake.ui.Modal):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        cached_nickname = get_cached_val(user_id, "ApplicationModal", "nickname", "")
+        cached_static_id = get_cached_val(user_id, "ApplicationModal", "static_id", "")
+        cached_method = get_cached_val(user_id, "ApplicationModal", "method", "")
+        cached_rank = get_cached_val(user_id, "ApplicationModal", "desired_rank", "")
+        cached_docs = get_cached_val(user_id, "ApplicationModal", "docs", "")
+        components = [
+            disnake.ui.TextInput(
+                label="Никнейм (игровой ник)",
+                custom_id="nickname",
+                required=True,
+                max_length=50,
+                value=cached_nickname
+            ),
+            disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                required=True,
+                max_length=50,
+                value=cached_static_id
+            ),
+            disnake.ui.TextInput(
+                label="Способ подачи",
+                custom_id="method",
+                placeholder="Собеседование / Электронная заявка / После КМБ",
+                required=True,
+                max_length=30,
+                value=cached_method
+            ),
+            disnake.ui.TextInput(
+                label="Звание",
+                custom_id="desired_rank",
+                placeholder="Рядовой",
+                required=True,
+                max_length=50,
+                value=cached_rank
+            )
+        ]
+        super().__init__(title="Заявка на роль", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        guild = interaction.guild
+        user = interaction.user
+        method_str = interaction.text_values["method"].strip()
+        rank_str = interaction.text_values["desired_rank"].strip()
+        nickname_str = interaction.text_values["nickname"].strip()
+        static_id_str = interaction.text_values["static_id"].strip()
+        set_cached_val(self.user_id, "ApplicationModal", "nickname", nickname_str)
+        set_cached_val(self.user_id, "ApplicationModal", "static_id", static_id_str)
+        set_cached_val(self.user_id, "ApplicationModal", "desired_rank", rank_str)
+        set_cached_val(self.user_id, "ApplicationModal", "method", method_str)
+        if get_rank_index(rank_str) == -1:
+            await interaction.response.send_message(
+                components=[v2_msg(
+                    f"Звание \"{rank_str}\" не найдено в списке допустимых.\n"
+                    f"Доступные звания: {', '.join(settings.ranks)}"
+                )],
+                ephemeral=True,
+            )
+            return
+        if rank_str.lower().strip() != "рядовой":
+            view = ApplicationDocsView(self.user_id, nickname_str, static_id_str, method_str, rank_str)
+            container = disnake.ui.Container(
+                disnake.ui.TextDisplay(
+                    "Поскольку вы выбрали звание выше Рядового, необходимо прикрепить доказательства (скриншот). Нажмите кнопку ниже."
+                ),
+                disnake.ui.ActionRow(*view.children),
+                accent_colour=disnake.Colour(0x2C2F33),
+            )
+            await interaction.response.send_message(components=[container], ephemeral=True)
+            msg = await interaction.original_message()
+            interaction.bot._connection.store_view(view, msg.id)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await _submit_application(interaction, user, guild, nickname_str, static_id_str, method_str, rank_str)
+class ApplicationDocsView(disnake.ui.View):
+    def __init__(self, user_id: int, nickname: str, static_id: str, method: str, rank: str):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        for child in self.children:
+            if getattr(child, "custom_id", None) == "app:attach_docs":
+                child.custom_id = f"app:attach_docs:{user_id}"
+        self.nickname = nickname
+        self.static_id = static_id
+        self.method = method
+        self.rank = rank
+    @disnake.ui.button(
+        label="Прикрепить доказательства",
+        style=disnake.ButtonStyle.primary,
+        custom_id="app:attach_docs",
+    )
+    async def docs_button(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        await interaction.response.send_modal(
+            ApplicationDocsModal(
+                user_id=self.user_id,
+                nickname=self.nickname,
+                static_id=self.static_id,
+                method=self.method,
+                rank=self.rank,
+            )
+        )
+class ApplicationDocsModal(disnake.ui.Modal):
+    def __init__(self, user_id: int, nickname: str, static_id: str, method: str, rank: str):
+        self.user_id = user_id
+        self.nickname = nickname
+        self.static_id = static_id
+        self.method = method
+        self.rank = rank
+        components = [
+            disnake.ui.TextInput(
+                label="Ссылка на доказательства",
+                custom_id="docs",
+                placeholder="Вставьте ссылку на скриншот / документ",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            )
+        ]
+        super().__init__(title="Доказательства (звание выше Рядового)", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        docs_str = interaction.text_values["docs"].strip()
+        set_cached_val(self.user_id, "ApplicationModal", "docs", docs_str)
+        await _submit_application(
+            interaction, interaction.user, interaction.guild,
+            self.nickname, self.static_id, self.method, self.rank, docs=docs_str
+        )
+class OtherOrgModal(disnake.ui.Modal):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        components = [
+            disnake.ui.TextInput(
+                label="Никнейм (игровой ник)",
+                custom_id="nickname",
+                required=True,
+                max_length=50,
+            ),
+            disnake.ui.TextInput(
+                label="Static ID",
+                custom_id="static_id",
+                required=True,
+                max_length=50,
+            ),
+            disnake.ui.TextInput(
+                label="Гос. Организация",
+                custom_id="org_name",
+                placeholder="ФСБ, ФСНВГ, ЦГБ, Правительство...",
+                required=True,
+                max_length=100,
+            ),
+            disnake.ui.TextInput(
+                label="Звание / Должность",
+                custom_id="org_rank",
+                placeholder="Например: Майор, Министр",
+                required=True,
+                max_length=50,
+            ),
+            disnake.ui.TextInput(
+                label="Ссылка на доказательства",
+                custom_id="docs",
+                placeholder="Вставьте ссылку на скриншот / документ",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            ),
+        ]
+        super().__init__(title="Заявка (Другие органы)", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        nickname_str = interaction.text_values["nickname"].strip()
+        static_id_str = interaction.text_values["static_id"].strip()
+        org_name_str = interaction.text_values["org_name"].strip()
+        org_rank_str = interaction.text_values["org_rank"].strip()
+        docs_str = interaction.text_values["docs"].strip()
+        method_str = f"Запрос ролей: {org_name_str}"
+        rank_str = org_rank_str
+        await _submit_application(
+            interaction, user, guild,
+            nickname_str, static_id_str, method_str, rank_str, docs=docs_str
+        )
+async def _submit_application(
+    interaction: disnake.ModalInteraction,
+    user: disnake.Member,
+    guild: disnake.Guild,
+    nickname_str: str,
+    static_id_str: str,
+    method_str: str,
+    rank_str: str,
+    docs: str = "",
+):
+    if guild is None:
+        await interaction.followup.send(
+            components=[v2_msg("Заявку можно отправить только на сервере.")],
+            ephemeral=True,
+        )
+        return
+    review_channel = guild.get_channel(settings.application_review_channel_id)
+    if review_channel is None and settings.application_review_channel_id:
+        try:
+            review_channel = await guild.fetch_channel(settings.application_review_channel_id)
+        except Exception as exc:
+            logger.error(
+                "Канал заявок %s недоступен: %s",
+                settings.application_review_channel_id,
+                exc,
+            )
+            review_channel = None
+    if not review_channel:
+        await interaction.followup.send(
+            components=[v2_msg("Канал для заявок не найден! Обратитесь к администратору.")],
+            ephemeral=True,
+        )
+        return
+    view = ApplicationActionView()
+    action_row = disnake.ui.ActionRow(*view.children)
+    container = build_application_container(
+        app_id="",
+        user=user,
+        nickname=nickname_str,
+        static_id=static_id_str,
+        method=method_str,
+        rank=rank_str,
+        status_text="Ожидает рассмотрения",
+        docs=docs,
+        action_row=action_row
+    )
+    try:
+        app_message = await review_channel.send(components=[container])
+    except Exception as exc:
+        logger.exception("Не удалось отправить заявку на зачисление: %s", exc)
+        await interaction.followup.send(
+            components=[v2_msg(f"Заявка не отправилась: {exc}")],
+            ephemeral=True,
+        )
+        return
+    app_id = add_application(
+        user_id=user.id,
+        user_name=str(user),
+        nickname=nickname_str,
+        static_id=static_id_str,
+        rank=rank_str,
+        method=method_str,
+        message_id=app_message.id,
+        docs=docs,
+    )
+    container_with_id = build_application_container(
+        app_id=app_id,
+        user=user,
+        nickname=nickname_str,
+        static_id=static_id_str,
+        method=method_str,
+        rank=rank_str,
+        status_text="Ожидает рассмотрения",
+        docs=docs,
+        action_row=action_row
+    )
+    await app_message.edit(components=[container_with_id])
+    logger.info(
+        "НОВАЯ ЗАЯВКА | Номер: #%s | Пользователь: %s (ID: %s) | Ник: %s | Static ID: %s | Звание: %s | Способ: %s",
+        app_id, user, user.id, nickname_str, static_id_str, rank_str, method_str
+    )
+    await interaction.followup.send(
+        components=[v2_msg(f"Заявка отправлена. Номер: #{app_id}")],
+        ephemeral=True,
+    )
+class ResignationModal(disnake.ui.Modal):
+    def __init__(self, user_data=None, user_id: int = 0):
+        self.user_data = user_data
+        self.user_id = user_id
+        cached_reason = get_cached_val(user_id, "ResignationModal", "reason", "")
+        default_nickname = get_cached_val(user_id, "ResignationModal", "nickname", "")
+        default_static_id = get_cached_val(user_id, "ResignationModal", "static_id", "")
+        default_rank = get_cached_val(user_id, "ResignationModal", "current_rank", "")
+        if not default_nickname and user_data:
+            default_nickname = user_data[0]
+        if not default_static_id and user_data:
+            default_static_id = user_data[1]
+        components = [
+            disnake.ui.TextInput(
+                label="Имя Фамилия (Никнейм)",
+                custom_id="nickname",
+                required=True,
+                max_length=50,
+                value=default_nickname
+            ),
+            disnake.ui.TextInput(
+                label="Номер удостоверения (Static ID)",
+                custom_id="static_id",
+                required=True,
+                max_length=50,
+                value=default_static_id
+            ),
+            disnake.ui.TextInput(
+                label="Текущее звание",
+                custom_id="current_rank",
+                required=True,
+                max_length=50,
+                value=default_rank
+            ),
+            disnake.ui.TextInput(
+                label="Причина увольнения",
+                custom_id="reason",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+                value=cached_reason
+            )
+        ]
+        super().__init__(title="Заявление на увольнение", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        nickname_str = interaction.text_values["nickname"].strip()
+        static_id_str = interaction.text_values["static_id"].strip()
+        rank_str = interaction.text_values["current_rank"].strip()
+        reason_str = interaction.text_values["reason"].strip()
+        set_cached_val(self.user_id, "ResignationModal", "reason", reason_str)
+        set_cached_val(self.user_id, "ResignationModal", "nickname", nickname_str)
+        set_cached_val(self.user_id, "ResignationModal", "static_id", static_id_str)
+        set_cached_val(self.user_id, "ResignationModal", "current_rank", rank_str)
+        refusal = employee_refusal(user, get_user(user.id), self_target=True)
+        if refusal:
+            await interaction.followup.send(components=[v2_msg(refusal)], ephemeral=True)
+            return
+        review_channel = guild.get_channel(settings.resignation_review_channel_id)
+        if not review_channel:
+            await interaction.followup.send(
+                components=[v2_msg("Канал для заявлений на увольнение не найден! Обратитесь к администратору.")],
+                ephemeral=True,
+            )
+            return
+        view = ResignationActionView()
+        action_row = disnake.ui.ActionRow(*view.children)
+        container = build_resignation_container(
+            app_id="",
+            user=user,
+            nickname=nickname_str,
+            static_id=static_id_str,
+            rank=rank_str,
+            reason=reason_str,
+            status_text="Ожидает рассмотрения",
+            guild=guild,
+            action_row=action_row
+        )
+        try:
+            app_message = await review_channel.send(components=[container])
+        except Exception as exc:
+            logger.exception("Не удалось отправить заявление на увольнение: %s", exc)
+            await interaction.followup.send(
+                components=[v2_msg(f"Заявление не отправилось: {exc}")],
+                ephemeral=True,
+            )
+            return
+        app_id = add_application(
+            user_id=user.id,
+            user_name=str(user),
+            nickname=nickname_str,
+            static_id=static_id_str,
+            rank=rank_str,
+            method="Увольнение",
+            message_id=app_message.id,
+            docs="",
+            reason=reason_str,
+        )
+        container_with_id = build_resignation_container(
+            app_id=app_id,
+            user=user,
+            nickname=nickname_str,
+            static_id=static_id_str,
+            rank=rank_str,
+            reason=reason_str,
+            status_text="Ожидает рассмотрения",
+            guild=guild,
+            action_row=action_row
+        )
+        await app_message.edit(components=[container_with_id])
+        logger.info(
+            "НОВОЕ ЗАЯВЛЕНИЕ НА УВОЛЬНЕНИЕ | Номер: #%s | Пользователь: %s (ID: %s) | Ник: %s | Static ID: %s | Текущее звание: %s",
+            app_id, user, user.id, nickname_str, static_id_str, rank_str
+        )
+        await interaction.followup.send(
+            components=[v2_msg(f"Заявление на увольнение отправлено! Номер: #{app_id}")],
+            ephemeral=True,
+        )
+class ResignationActionView(disnake.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @disnake.ui.button(label="Одобрить", style=disnake.ButtonStyle.success, custom_id="approve_resignation")
+    async def approve_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        member = interaction.user
+        if not can_manage_resignations(member):
+            await interaction.response.send_message(
+                components=[v2_msg("Недостаточно прав. ")],
+                ephemeral=True
+            )
+            return
+        app = get_application_by_message_id(interaction.message.id)
+        if not app:
+            await interaction.response.send_message(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
+            return
+        app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = app
+        if status != "pending":
+            await interaction.response.send_message(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
+            return
+        if member.id == user_id:
+            await interaction.response.send_message(components=[v2_msg("Нельзя одобрять своё собственное заявление.")], ephemeral=True)
+            return
+        stored_reason = _stored_application_reason(app) or _reason_from_message(interaction.message) or "Не указана"
+        target = interaction.guild.get_member(user_id)
+        if not target:
+            await interaction.response.send_message(
+                components=[v2_msg(f"Пользователь с ID {user_id} покинул сервер.")],
+                ephemeral=True,
+            )
+            return
+        refusal = employee_refusal(target, get_user(user_id), self_target=False)
+        if refusal:
+            await interaction.response.send_message(components=[v2_msg(refusal)], ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(ResignationApproveModal(
+            interaction.message, app_id, user_id, nickname, static_id, rank, stored_reason
+        ))
+
+    @disnake.ui.button(label="Отклонить", style=disnake.ButtonStyle.danger, custom_id="reject_resignation")
+    async def reject_resignation(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        member = interaction.user
+        if not can_manage_resignations(member):
+            await interaction.response.send_message(
+                components=[v2_msg("Недостаточно прав. ")],
+                ephemeral=True
+            )
+            return
+        app = get_application_by_message_id(interaction.message.id)
+        if not app:
+            await interaction.response.send_message(components=[v2_msg("Заявление не найдено.")], ephemeral=True)
+            return
+        _, user_id, _, _, _, _, _, status, *_ = app
+        if status != "pending":
+            await interaction.response.send_message(components=[v2_msg(f"Заявление уже обработано (статус: {status}).")], ephemeral=True)
+            return
+        if member.id == user_id:
+            await interaction.response.send_message(components=[v2_msg("Нельзя отклонять своё собственное заявление.")], ephemeral=True)
+            return
+        modal = ResignationRejectionReasonModal(app_data=app, interaction_message=interaction.message)
+        await interaction.response.send_modal(modal)
+
+class ResignationApproveModal(disnake.ui.Modal):
+    def __init__(self, target_message, app_id, user_id, nickname, static_id, rank, reason):
+        self.target_message = target_message
+        self.app_id = app_id
+        self.target_user_id = user_id
+        self.nickname = nickname
+        self.static_id = static_id
+        self.rank = rank
+        self.reason = reason or "Не указана"
+        
+        components = [
+            disnake.ui.TextInput(
+                label="Занести в ЧС? (Да / Нет)",
+                custom_id="bl_decision",
+                required=True,
+                max_length=10
+            ),
+            disnake.ui.TextInput(
+                label="Срок ЧС (если Да)",
+                custom_id="bl_duration",
+                required=False,
+                placeholder="Например: 15 дней, 2 месяца, навсегда",
+                max_length=50
+            ),
+            disnake.ui.TextInput(
+                label="Причина занесения в ЧС",
+                custom_id="bl_reason",
+                required=False,
+                placeholder="Укажите причину (если занести в ЧС)",
+                max_length=200
+            )
+        ]
+        super().__init__(title="Одобрение увольнения", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        async with interaction_guard.lock(self.target_message.id) as acquired:
+            if not acquired:
+                await interaction.followup.send(
+                    components=[v2_msg("Это заявление уже обрабатывает другой модератор.")],
+                    ephemeral=True,
+                )
+                return
+            
+            app = get_application_by_message_id(self.target_message.id)
+            if not app or app[7] != "pending":
+                await interaction.followup.send(components=[v2_msg("Заявление уже было обработано.")], ephemeral=True)
+                return
+
+            guild = interaction.guild
+            member = interaction.user
+            target = guild.get_member(self.target_user_id)
+            if not target:
+                await interaction.followup.send(components=[v2_msg("Сотрудник покинул сервер.")], ephemeral=True)
+                return
+            
+            bot_member = guild.get_member(interaction.client.user.id)
+            errors = []
+            removed_roles_list = []
+            cleanup_ids = settings.roles_to_cleanup_ids
+            cleanup_names = settings.roles_to_cleanup_names
+            extra_cleanup_ids = set()
+            if settings.divider_position_id: extra_cleanup_ids.add(settings.divider_position_id)
+            if settings.divider_department_id: extra_cleanup_ids.add(settings.divider_department_id)
+            if settings.divider_rank_id: extra_cleanup_ids.add(settings.divider_rank_id)
+            if settings.divider_access_id: extra_cleanup_ids.add(settings.divider_access_id)
+            extra_cleanup_ids.update(settings.department_role_ids.values())
+            extra_cleanup_ids.update(settings.obsolete_department_role_ids)
+            for role in target.roles:
+                is_cleanup = False
+                if cleanup_ids and role.id in cleanup_ids:
+                    is_cleanup = True
+                elif role.name in cleanup_names:
+                    is_cleanup = True
+                elif role.id in extra_cleanup_ids:
+                    is_cleanup = True
+                elif role.id in (settings.base_role_id, settings.cadet_role_id):
+                    is_cleanup = True
+                if role.id in settings.ranks_map.values():
+                    is_cleanup = True
+                if is_cleanup and can_manage_role(bot_member, role):
+                    try:
+                        await target.remove_roles(role)
+                        removed_roles_list.append(clean_role_name(role.name))
+                    except Exception as exc:
+                        errors.append(f"{role.name}: {exc}")
+            
+            fired_role = guild.get_role(settings.fired_role_id)
+            issued_roles_list = []
+            if fired_role and fired_role not in target.roles and can_manage_role(bot_member, fired_role):
+                try:
+                    await target.add_roles(fired_role)
+                    issued_roles_list.append(clean_role_name(fired_role.name))
+                except Exception as exc:
+                    errors.append(f"Уволен: {exc}")
+            
+            raw_name = self.nickname if (self.nickname and self.nickname not in ("Не указан", "")) else target.display_name
+            if " | " in raw_name:
+                base_name = raw_name.split(" | ")[-1].strip()
+            else:
+                base_name = raw_name
+                
+            fired_nick = f"Уволен | {base_name}"
+            if len(fired_nick) > 32:
+                available = 32 - len("Уволен | ")
+                fired_nick = f"Уволен | {base_name[:available]}"
+            try:
+                await target.edit(nick=fired_nick)
+            except Exception as exc:
+                errors.append(f"Ошибка изменения ника: {exc}")
+            
+            update_application_status(self.app_id, "issued", member.id, str(member))
+            set_user_status(target.id, "fired")
+            add_audit_record(
+                action="Уволить",
+                target_user_id=target.id,
+                target_user_name=str(target),
+                target_static_id=self.static_id,
+                target_rank="",
+                target_position="",
+                method="Заявление",
+                reason=self.reason,
+                performed_by_id=member.id,
+                performed_by_name=str(member),
+                issued_roles=", ".join(issued_roles_list) if issued_roles_list else "Нет",
+                removed_roles=", ".join(removed_roles_list) if removed_roles_list else "Нет",
+            )
+            from cogs.audit import build_audit_container, post_audit_container
+            audit_cont = build_audit_container(
+                action_verb="увольняет",
+                performer=member,
+                target=target,
+                static_id=self.static_id,
+                reason=self.reason
+            )
+            await post_audit_container(guild, audit_cont)
+            
+            staff_title = get_staff_title(member, guild)
+            status_text = f"Одобрено {staff_title}\nСотрудник уволен"
+            if removed_roles_list:
+                status_text += f"\nСняты роли: {', '.join(removed_roles_list)}"
+            if errors:
+                status_text += f"\nОшибки: {', '.join(errors)}"
+            new_container = build_resignation_container(
+                app_id=self.app_id,
+                user=target,
+                nickname=self.nickname,
+                static_id=self.static_id,
+                rank=self.rank,
+                reason=self.reason,
+                status_text=status_text,
+                guild=guild,
+            )
+            await self.target_message.edit(components=[new_container])
+            
+            bl_decision = interaction.text_values.get("bl_decision", "").strip().lower()
+            want_bl = bl_decision in ("да", "yes", "д", "y", "+")
+            if want_bl:
+                from utils.helpers import give_blacklist
+                bl_duration = interaction.text_values.get("bl_duration", "").strip()
+                bl_reason = interaction.text_values.get("bl_reason", "").strip() or self.reason
+                errors.extend(await give_blacklist(
+                    guild,
+                    target,
+                    user_id=target.id,
+                    nickname=base_name,
+                    static_id=self.static_id,
+                    reason=bl_reason,
+                    duration_str=bl_duration,
+                    added_by=member,
+                ))
+            logger.info(
+                "ЗАЯВЛЕНИЕ НА УВОЛЬНЕНИЕ ОДОБРЕНО | Номер: #%s | Сотрудник: %s (ID: %s) | Выполнил: %s (ID: %s) | Снятые роли: %s",
+                self.app_id, target, target.id, member, member.id, ", ".join(removed_roles_list)
+            )
+            desc_dm = (
+                f"### Уведомление об увольнении #{self.app_id}\n\n"
+                f"Ваше заявление на увольнение было **одобрено** {staff_title}.\n"
+                f"> **Снятые роли:** {', '.join(removed_roles_list) if removed_roles_list else 'Нет'}"
+            )
+            dm_container = disnake.ui.Container(
+                disnake.ui.TextDisplay(desc_dm),
+                accent_colour=disnake.Colour(0x2C2F33)
+            )
+            dm_sent = await send_dm(target, components=[dm_container])
+            dm_status = "ЛС отправлены" if dm_sent else "ЛС закрыты"
+            done_text = f"Заявление одобрено, роли с {target.mention} сняты.\nПричина: {self.reason}\n{dm_status}"
+            if errors:
+                done_text += "\nОшибки: " + ", ".join(errors)
+            await interaction.followup.send(
+                components=[v2_msg(done_text)],
+                ephemeral=True
+            )
+class ResignationRejectionReasonModal(disnake.ui.Modal):
+    def __init__(self, app_data, interaction_message):
+        self.app_data = app_data
+        self.interaction_message = interaction_message
+        components = [
+            disnake.ui.TextInput(
+                label="Причина отклонения",
+                custom_id="reason",
+                placeholder="Укажите причину отклонения заявления на увольнение",
+                required=True,
+                max_length=500,
+                style=disnake.TextInputStyle.paragraph,
+            )
+        ]
+        super().__init__(title="Причина отклонения", components=components)
+    async def callback(self, interaction: disnake.ModalInteraction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+        app_id, user_id, user_name, nickname, static_id, rank, method, status, *_ = self.app_data
+        reason_val = interaction.text_values["reason"].strip()
+        original_reason = _stored_application_reason(self.app_data) or _reason_from_message(self.interaction_message) or "Не указана"
+        update_application_status(app_id, "rejected", member.id, str(member))
+        target = guild.get_member(user_id)
+        if not target:
+            try:
+                target = await interaction.client.fetch_user(user_id)
+            except Exception:
+                target = interaction.user
+        staff_title = get_staff_title(member, guild)
+        container = build_resignation_container(
+            app_id=app_id,
+            user=target,
+            nickname=nickname,
+            static_id=static_id,
+            rank=rank,
+            reason=original_reason,
+            status_text=f"Отклонено {staff_title}\nПричина отклонения: {reason_val}",
+            guild=guild,
+        )
+        await self.interaction_message.edit(components=[container])
+        logger.info(
+            "ЗАЯВЛЕНИЕ НА УВОЛЬНЕНИЕ ОТКЛОНЕНО | Номер: #%s | Сотрудник: %s (%s) | Отклонил: %s (ID: %s) | Причина: %s",
+            app_id, user_name, user_id, member, member.id, reason_val
+        )
+        dm_status = "ЛС закрыты"
+        if target:
+            desc_dm = (
+                f"### Уведомление об увольнении #{app_id}\n\n"
+                f"Ваше заявление на увольнение было **отклонено** {staff_title}.\n"
+                f"> **Причина отклонения:** {reason_val}\n"
+                f"> **Сервер:** {guild.name}"
+            )
+            dm_container = disnake.ui.Container(
+                disnake.ui.TextDisplay(desc_dm),
+                accent_colour=disnake.Colour(0x2C2F33)
+            )
+            dm_sent = await send_dm(target, components=[dm_container])
+            if dm_sent:
+                dm_status = "ЛС отправлены"
+        else:
+            dm_status = "Пользователь покинул сервер"
+        await interaction.followup.send(
+            components=[v2_msg(f"Заявление на увольнение отклонено. Причина: {reason_val}\n{dm_status}")],
+            ephemeral=True,
+        )
+from disnake.ext import tasks
+from database import add_or_update_user, get_user
+import asyncio
+class ApplicationsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.sync_db_task.start()
+        self.expire_blacklist_task.start()
+    def cog_unload(self):
+        self.sync_db_task.cancel()
+        self.expire_blacklist_task.cancel()
+    @tasks.loop(minutes=2)
+    async def expire_blacklist_task(self):
+        await self.bot.wait_until_ready()
+        from database import list_expired_blacklist
+        from utils.helpers import take_blacklist
+        for row in list_expired_blacklist():
+            user_id = row["user_id"]
+            for guild in self.bot.guilds:
+                errors = await take_blacklist(
+                    guild,
+                    user_id,
+                    reason="Срок ЧС истёк",
+                    actor=None,
+                )
+                if errors:
+                    logger.error("Снятие ЧС %s: %s", user_id, ", ".join(errors))
+                break
+    @tasks.loop(minutes=10)
+    async def sync_db_task(self):
+        await self.bot.wait_until_ready()
+        if not self.bot.guilds:
+            return
+        guild = self.bot.guilds[0]
+        base_role = guild.get_role(settings.base_role_id)
+        if not base_role:
+            return
+        synced_count = 0
+        for member in guild.members:
+            if base_role in member.roles:
+                user_db = get_user(member.id)
+                if not user_db:
+                    from utils.helpers import get_member_rank_index
+                    rank_idx = get_member_rank_index(member, guild)
+                    rank_name = settings.ranks[rank_idx] if rank_idx != -1 else "Неизвестно"
+                    static_id = "Не указан"
+                    add_or_update_user(member.id, member.display_name, static_id, rank_name, "active")
+                    synced_count += 1
+                    await asyncio.sleep(0.1)
+        if synced_count > 0:
+            logger.info(f"Авто-синхронизация БД: добавлено {synced_count} сотрудников.")
+    async def init_panel(self):
+        await send_v2_panel(self.bot, settings.application_panel_channel_id, "application")
+        await send_v2_panel(self.bot, settings.resignation_panel_channel_id, "resignation")
+def setup(bot):
+    bot.add_cog(ApplicationsCog(bot))

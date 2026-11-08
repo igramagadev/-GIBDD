@@ -1,0 +1,10 @@
+.env
+logs/
+bot_database.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+disabled_features.py
+backups/
+.ruff_cache/

@@ -1,0 +1,8 @@
+.env
+bot_database.db
+database.sqlite
+__pycache__
+.git
+logs
+venv
+.venv
