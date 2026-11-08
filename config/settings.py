@@ -122,6 +122,9 @@ class Settings:
     blacklist_channel_id: int = field(
         default_factory=lambda: _int_env("BLACKLIST_CHANNEL_ID", 0)
     )
+    blacklist_roster_channel_id: int = field(
+        default_factory=lambda: _int_env("BLACKLIST_ROSTER_CHANNEL_ID", 0)
+    )
     blacklist_ping_roles: list[int] = field(
         default_factory=lambda: _int_list_env("BLACKLIST_PING_ROLES", [])
     )

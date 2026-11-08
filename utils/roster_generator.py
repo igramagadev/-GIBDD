@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
@@ -306,3 +307,103 @@ async def update_cpps_roster(guild):
                 pass
     except Exception:
         logger.exception("Не удалось отправить состав ЦППС")
+
+
+def _format_blacklist_until(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "бессрочно"
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw
+    return f"<t:{int(moment.timestamp())}:D>"
+
+
+def _blacklist_line(user_id: int, nickname: str, static_id: str, reason: str, expires_at: str | None) -> str:
+    name = (nickname or "").strip() or "Без имени"
+    static = (static_id or "").strip()
+    if not static or static in {"Не указан", "—", "-"}:
+        static = "—"
+    why = " ".join((reason or "—").split())
+    if len(why) > 80:
+        why = why[:77] + "..."
+    return f"- <@{user_id}> · **{name}** — `{static}` · {_format_blacklist_until(expires_at)} · {why}"
+
+
+def build_blacklist_roster_components(lines: list[str]):
+    import disnake
+    body = "\n".join(lines) if lines else "- никого"
+    blocks = [
+        disnake.ui.TextDisplay(f"# Чёрный список\nЧеловек в списке: **{len(lines)}**"),
+        disnake.ui.Separator(divider=True, spacing=disnake.SeparatorSpacing.small),
+    ]
+    for chunk in _split_text(body):
+        blocks.append(disnake.ui.TextDisplay(chunk))
+    return [
+        disnake.ui.Container(
+            *blocks,
+            accent_colour=disnake.Colour(0x2C2F33),
+        )
+    ]
+
+
+async def update_blacklist_roster(guild):
+    import logging
+    import disnake
+    from config.constants import settings
+    from database import get_blacklist
+
+    logger = logging.getLogger(__name__)
+    channel_id = settings.blacklist_roster_channel_id
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if channel is None and channel_id:
+        try:
+            channel = await guild.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+    if not channel:
+        return
+
+    rows = get_blacklist()
+    dated = []
+    permanent = []
+    for user_id, nickname, static_id, reason, _added_by, _created_at, expires_at in rows:
+        line = _blacklist_line(user_id, nickname, static_id, reason, expires_at)
+        if (expires_at or "").strip():
+            dated.append(((expires_at or ""), line))
+        else:
+            permanent.append(((nickname or "").casefold(), line))
+    dated.sort(key=lambda item: item[0])
+    permanent.sort(key=lambda item: item[0])
+    lines = [line for _, line in dated] + [line for _, line in permanent]
+    components = build_blacklist_roster_components(lines)
+    mentions = disnake.AllowedMentions.none()
+    try:
+        latest = None
+        stale = []
+        async for message in channel.history(limit=30):
+            if message.author.id != guild.me.id:
+                continue
+            if not getattr(message.flags, "is_components_v2", False):
+                continue
+            if latest is None:
+                latest = message
+            else:
+                stale.append(message)
+        if latest is not None:
+            try:
+                await latest.edit(components=components, allowed_mentions=mentions)
+            except Exception:
+                logger.exception("Не удалось обновить чёрный список, отправляю заново")
+                await channel.send(components=components, allowed_mentions=mentions)
+                stale.append(latest)
+        else:
+            await channel.send(components=components, allowed_mentions=mentions)
+        for message in stale:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("Не удалось отправить чёрный список")

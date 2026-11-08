@@ -92,10 +92,11 @@ class GibddBot(commands.Bot):
         while not self.is_closed():
             for guild in self.guilds:
                 try:
-                    from utils.roster_generator import update_cpps_roster
+                    from utils.roster_generator import update_blacklist_roster, update_cpps_roster
                     await update_cpps_roster(guild)
+                    await update_blacklist_roster(guild)
                 except Exception as exc:
-                    logger.exception("Ошибка обновления состава ЦППС: %s", exc)
+                    logger.exception("Ошибка обновления состава: %s", exc)
             await asyncio.sleep(1800)
 
     async def on_error(self, event: str, *args, **kwargs) -> None:

@@ -393,6 +393,7 @@ async def give_blacklist(
         except Exception as exc:
             logger.error("Не удалось отправить уведомление в ЧС: %s", exc)
             errors.append(f"Канал ЧС: {exc}")
+    _schedule_blacklist_roster(guild)
     return errors
 
 async def take_blacklist(
@@ -451,7 +452,20 @@ async def take_blacklist(
             errors.append(f"Канал ЧС: {exc}")
     elif settings.blacklist_channel_id:
         errors.append("Канал ЧС не найден")
+    _schedule_blacklist_roster(guild)
     return errors
+
+def _schedule_blacklist_roster(guild: disnake.Guild) -> None:
+    import asyncio
+    from utils.roster_generator import update_blacklist_roster
+
+    async def _run() -> None:
+        try:
+            await update_blacklist_roster(guild)
+        except Exception:
+            logger.exception("Не удалось обновить состав ЧС")
+
+    asyncio.create_task(_run())
 
 def find_rank_role(guild: disnake.Guild, rank_name: str) -> disnake.Role | None:
     cleaned_name = rank_name.strip().lower()
